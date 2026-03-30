@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oct-annotator"
+version = "0.1.0"
+description = "M-Scan OCT boundary annotator with spline interpolation and gradient refinement."
+requires-python = ">=3.9"
+dependencies = [
+    "PyQt6>=6.5",
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.scripts]
+oct-annotate = "oct_annotator.main:run_app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

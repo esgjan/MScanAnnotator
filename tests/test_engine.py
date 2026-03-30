@@ -1,0 +1,136 @@
+"""Tests for the OCT annotator engine (spline + gradient refinement)."""
+
+from __future__ import annotations
+
+import time
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from oct_annotator.engine import fit_spline, refine_boundary
+
+
+# ---------------------------------------------------------------------------
+# Unit tests – spline fitting
+# ---------------------------------------------------------------------------
+
+class TestFitSpline:
+    """Validate spline fitting with controlled seed points."""
+
+    def test_returns_correct_width(self):
+        xs = np.array([0.0, 250.0, 499.0])
+        ys = np.array([100.0, 120.0, 110.0])
+        result = fit_spline(xs, ys, width=500)
+        assert result.shape == (500,)
+
+    def test_dtype_is_int(self):
+        xs = np.array([0.0, 100.0, 200.0])
+        ys = np.array([50.0, 60.0, 55.0])
+        result = fit_spline(xs, ys, width=300)
+        assert np.issubdtype(result.dtype, np.integer)
+
+    def test_two_points_linear(self):
+        """Two points should produce a linear (degree-1) spline."""
+        xs = np.array([0.0, 99.0])
+        ys = np.array([10.0, 20.0])
+        result = fit_spline(xs, ys, width=100)
+        # Endpoints should be close to the seed y-values
+        assert abs(int(result[0]) - 10) <= 1
+        assert abs(int(result[-1]) - 20) <= 1
+
+    def test_raises_on_single_point(self):
+        with pytest.raises(ValueError, match="At least 2"):
+            fit_spline(np.array([5.0]), np.array([5.0]), width=100)
+
+    def test_values_within_image_bounds(self):
+        """Spline values should stay near the provided y-range."""
+        xs = np.array([0.0, 50.0, 100.0])
+        ys = np.array([200.0, 210.0, 205.0])
+        result = fit_spline(xs, ys, width=101)
+        assert result.min() >= 190  # reasonable bound
+        assert result.max() <= 220
+
+
+# ---------------------------------------------------------------------------
+# Unit tests – gradient refinement
+# ---------------------------------------------------------------------------
+
+class TestRefineBoundary:
+    """Validate gradient-based boundary snapping."""
+
+    def test_snaps_to_edge(self):
+        """Create an image with a clear horizontal edge and verify snapping."""
+        rows, cols = 100, 200
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+        edge_row = 50
+        m_scan[edge_row:, :] = 1.0  # strong edge at row 50
+
+        # Start with indices offset by 3 rows from the true edge
+        initial = np.full(cols, edge_row + 3, dtype=np.int64)
+        refined = refine_boundary(m_scan, initial, delta=5)
+
+        # The gradient peaks at the pixel just before the step (row 49),
+        # because np.gradient computes the central difference
+        np.testing.assert_array_equal(refined, edge_row - 1)
+
+    def test_output_dtype(self):
+        m_scan = np.random.rand(64, 64)
+        indices = np.full(64, 32, dtype=np.int64)
+        refined = refine_boundary(m_scan, indices, delta=3)
+        assert refined.dtype == np.uint16
+
+    def test_output_shape(self):
+        m_scan = np.random.rand(128, 256)
+        indices = np.full(256, 64, dtype=np.int64)
+        refined = refine_boundary(m_scan, indices, delta=5)
+        assert refined.shape == (256,)
+
+
+# ---------------------------------------------------------------------------
+# Integration test – mock file round-trip
+# ---------------------------------------------------------------------------
+
+class TestIntegrationSaveLoad:
+    """Simulate the full annotate-and-save workflow with a temp file."""
+
+    def test_output_filename_convention(self, tmp_path: Path):
+        # Create a mock M-scan .npy
+        data = np.random.rand(100, 200).astype(np.float64)
+        src = tmp_path / "scan_001_m-scan.npy"
+        np.save(str(src), data)
+
+        # Simulate annotation
+        xs = np.array([0.0, 100.0, 199.0])
+        ys = np.array([50.0, 55.0, 52.0])
+        spline = fit_spline(xs, ys, width=200)
+        refined = refine_boundary(data, spline, delta=5)
+
+        # Save as the app would
+        out_name = src.stem + "_annotations.npy"
+        out_path = tmp_path / out_name
+        np.save(str(out_path), refined.astype(np.uint16).reshape(-1, 1))
+
+        # Verify
+        assert out_path.exists()
+        assert "_annotations.npy" in out_path.name
+        loaded = np.load(str(out_path))
+        assert loaded.shape == (200, 1)
+        assert loaded.dtype == np.uint16
+
+
+# ---------------------------------------------------------------------------
+# Performance test – gradient refinement < 100 ms for 1000-wide scan
+# ---------------------------------------------------------------------------
+
+class TestPerformance:
+    def test_refine_under_100ms(self):
+        m_scan = np.random.rand(1024, 1000).astype(np.float64)
+        indices = np.full(1000, 512, dtype=np.int64)
+
+        start = time.perf_counter()
+        refine_boundary(m_scan, indices, delta=5)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        assert elapsed_ms < 100, f"Refinement took {elapsed_ms:.1f} ms (limit 100 ms)"

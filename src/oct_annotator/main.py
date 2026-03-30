@@ -1,0 +1,225 @@
+"""Main application window and entry point for the OCT M-Scan Annotator."""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+from typing import List
+
+import numpy as np
+from numpy.typing import NDArray
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QComboBox,
+    QStatusBar,
+    QMessageBox,
+    QSpinBox,
+)
+
+from oct_annotator.viewer import MScanViewer
+from oct_annotator.engine import fit_spline, refine_boundary
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, directory: str | None = None):
+        super().__init__()
+        self.setWindowTitle("OCT M-Scan Annotator")
+        self.resize(1200, 700)
+
+        # State
+        self._npy_files: List[Path] = []
+        self._current_data: NDArray | None = None
+        self._spline_indices: NDArray | None = None
+        self._refined_indices: NDArray | None = None
+
+        self._build_ui()
+        self._connect_signals()
+
+        if directory:
+            self._load_directory(directory)
+
+    # ---- UI construction -----------------------------------------------
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+
+        # Top toolbar row
+        toolbar = QHBoxLayout()
+        root.addLayout(toolbar)
+
+        self._btn_open = QPushButton("Open Folder…")
+        toolbar.addWidget(self._btn_open)
+
+        toolbar.addWidget(QLabel("File:"))
+        self._combo_files = QComboBox()
+        self._combo_files.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        toolbar.addWidget(self._combo_files, stretch=1)
+
+        self._btn_fit = QPushButton("Fit Spline")
+        self._btn_fit.setEnabled(False)
+        toolbar.addWidget(self._btn_fit)
+
+        toolbar.addWidget(QLabel("δ:"))
+        self._spin_delta = QSpinBox()
+        self._spin_delta.setRange(1, 50)
+        self._spin_delta.setValue(5)
+        self._spin_delta.setToolTip("Half-window size for gradient refinement")
+        toolbar.addWidget(self._spin_delta)
+
+        self._btn_refine = QPushButton("Fine-tune")
+        self._btn_refine.setEnabled(False)
+        toolbar.addWidget(self._btn_refine)
+
+        self._btn_save = QPushButton("Save")
+        self._btn_save.setEnabled(False)
+        toolbar.addWidget(self._btn_save)
+
+        self._btn_clear = QPushButton("Clear Seeds")
+        toolbar.addWidget(self._btn_clear)
+
+        # Viewer
+        self._viewer = MScanViewer()
+        root.addWidget(self._viewer, stretch=1)
+
+        # Status bar
+        self._status = QStatusBar()
+        self.setStatusBar(self._status)
+        self._status.showMessage("Open a folder containing .npy M-scan files to begin.")
+
+    # ---- Signals -------------------------------------------------------
+
+    def _connect_signals(self):
+        self._btn_open.clicked.connect(self._on_open)
+        self._combo_files.currentIndexChanged.connect(self._on_file_selected)
+        self._btn_fit.clicked.connect(self._on_fit_spline)
+        self._btn_refine.clicked.connect(self._on_refine)
+        self._btn_save.clicked.connect(self._on_save)
+        self._btn_clear.clicked.connect(self._on_clear)
+        self._viewer.seeds_changed.connect(self._on_seeds_changed)
+
+    # ---- Slots ---------------------------------------------------------
+
+    def _on_open(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select M-scan directory")
+        if directory:
+            self._load_directory(directory)
+
+    def _load_directory(self, directory: str):
+        folder = Path(directory)
+        self._npy_files = sorted(folder.glob("*.npy"))
+        self._combo_files.blockSignals(True)
+        self._combo_files.clear()
+        for f in self._npy_files:
+            self._combo_files.addItem(f.name)
+        self._combo_files.blockSignals(False)
+
+        if self._npy_files:
+            self._combo_files.setCurrentIndex(0)
+            self._on_file_selected(0)
+        else:
+            self._status.showMessage("No .npy files found in the selected folder.")
+
+    def _on_file_selected(self, index: int):
+        if index < 0 or index >= len(self._npy_files):
+            return
+        path = self._npy_files[index]
+        try:
+            self._current_data = np.load(str(path)).astype(np.float64)
+        except Exception as exc:
+            QMessageBox.critical(self, "Load error", str(exc))
+            return
+
+        self._spline_indices = None
+        self._refined_indices = None
+        self._btn_fit.setEnabled(False)
+        self._btn_refine.setEnabled(False)
+        self._btn_save.setEnabled(False)
+
+        self._viewer.set_image(self._current_data)
+        self._status.showMessage(
+            f"Loaded {path.name}  —  shape {self._current_data.shape}  |  "
+            "Click on the image to place seed points, then Fit Spline."
+        )
+
+    def _on_seeds_changed(self):
+        n = len(self._viewer.seeds)
+        self._btn_fit.setEnabled(n >= 2)
+        self._status.showMessage(f"{n} seed point(s) placed.")
+
+    def _on_fit_spline(self):
+        seeds = self._viewer.seeds
+        if len(seeds) < 2:
+            return
+        xs = np.array([s[0] for s in seeds])
+        ys = np.array([s[1] for s in seeds])
+        width = self._viewer.image_width
+        try:
+            self._spline_indices = fit_spline(xs, ys, width)
+        except Exception as exc:
+            QMessageBox.warning(self, "Spline error", str(exc))
+            return
+        self._viewer.draw_spline(self._spline_indices)
+        self._btn_refine.setEnabled(True)
+        self._btn_save.setEnabled(True)
+        self._refined_indices = None
+        self._status.showMessage("Spline fitted. Press Fine-tune or Save.")
+
+    def _on_refine(self):
+        if self._spline_indices is None or self._current_data is None:
+            return
+        delta = self._spin_delta.value()
+        self._refined_indices = refine_boundary(
+            self._current_data, self._spline_indices, delta=delta
+        )
+        self._viewer.draw_refined(self._refined_indices)
+        self._btn_save.setEnabled(True)
+        self._status.showMessage("Boundary refined via gradient snap. Press Save to export.")
+
+    def _on_save(self):
+        indices = self._refined_indices if self._refined_indices is not None else self._spline_indices
+        if indices is None:
+            return
+
+        current_idx = self._combo_files.currentIndex()
+        src_path = self._npy_files[current_idx]
+        out_name = src_path.stem + "_annotations.npy"
+        out_path = src_path.parent / out_name
+
+        # Save as (width, 1) uint16
+        to_save = indices.astype(np.uint16).reshape(-1, 1)
+        np.save(str(out_path), to_save)
+        self._status.showMessage(f"Saved → {out_path.name}  (shape {to_save.shape})")
+
+    def _on_clear(self):
+        self._viewer.clear_seeds()
+        self._viewer.clear_overlays()
+        self._spline_indices = None
+        self._refined_indices = None
+        self._btn_fit.setEnabled(False)
+        self._btn_refine.setEnabled(False)
+        self._btn_save.setEnabled(False)
+        self._status.showMessage("Seeds cleared.")
+
+
+def run_app():
+    """CLI entry point."""
+    app = QApplication(sys.argv)
+    directory = sys.argv[1] if len(sys.argv) > 1 else None
+    win = MainWindow(directory=directory)
+    win.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    run_app()
