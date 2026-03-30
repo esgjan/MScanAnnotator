@@ -107,6 +107,11 @@ class MScanViewer(QGraphicsView):
         self._remove_item(self._refined_path_item)
         self._refined_path_item = None
 
+    def clear_refined(self) -> None:
+        """Remove only the refined (blue) overlay, keeping the spline."""
+        self._remove_item(self._refined_path_item)
+        self._refined_path_item = None
+
     def clear_seeds(self) -> None:
         for item in self._seed_items:
             self._scene.removeItem(item)

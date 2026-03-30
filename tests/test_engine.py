@@ -69,7 +69,7 @@ class TestRefineBoundary:
 
         # Start with indices offset by 3 rows from the true edge
         initial = np.full(cols, edge_row + 3, dtype=np.int64)
-        refined = refine_boundary(m_scan, initial, delta=5)
+        refined = refine_boundary(m_scan, initial)
 
         # The gradient peaks at the pixel just before the step (row 49),
         # because np.gradient computes the central difference
@@ -78,13 +78,13 @@ class TestRefineBoundary:
     def test_output_dtype(self):
         m_scan = np.random.rand(64, 64)
         indices = np.full(64, 32, dtype=np.int64)
-        refined = refine_boundary(m_scan, indices, delta=3)
+        refined = refine_boundary(m_scan, indices)
         assert refined.dtype == np.uint16
 
     def test_output_shape(self):
         m_scan = np.random.rand(128, 256)
         indices = np.full(256, 64, dtype=np.int64)
-        refined = refine_boundary(m_scan, indices, delta=5)
+        refined = refine_boundary(m_scan, indices)
         assert refined.shape == (256,)
 
 
@@ -105,7 +105,7 @@ class TestIntegrationSaveLoad:
         xs = np.array([0.0, 100.0, 199.0])
         ys = np.array([50.0, 55.0, 52.0])
         spline = fit_spline(xs, ys, width=200)
-        refined = refine_boundary(data, spline, delta=5)
+        refined = refine_boundary(data, spline)
 
         # Save as the app would
         out_name = src.stem + "_annotations.npy"
@@ -130,7 +130,7 @@ class TestPerformance:
         indices = np.full(1000, 512, dtype=np.int64)
 
         start = time.perf_counter()
-        refine_boundary(m_scan, indices, delta=5)
+        refine_boundary(m_scan, indices)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         assert elapsed_ms < 100, f"Refinement took {elapsed_ms:.1f} ms (limit 100 ms)"

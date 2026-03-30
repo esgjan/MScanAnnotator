@@ -22,7 +22,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QStatusBar,
     QMessageBox,
-    QSpinBox,
 )
 
 from oct_annotator.viewer import MScanViewer
@@ -70,16 +69,13 @@ class MainWindow(QMainWindow):
         self._btn_fit.setEnabled(False)
         toolbar.addWidget(self._btn_fit)
 
-        toolbar.addWidget(QLabel("δ:"))
-        self._spin_delta = QSpinBox()
-        self._spin_delta.setRange(1, 50)
-        self._spin_delta.setValue(5)
-        self._spin_delta.setToolTip("Half-window size for gradient refinement")
-        toolbar.addWidget(self._spin_delta)
-
         self._btn_refine = QPushButton("Fine-tune")
         self._btn_refine.setEnabled(False)
         toolbar.addWidget(self._btn_refine)
+
+        self._btn_reset_refine = QPushButton("Reset Fine-tuning")
+        self._btn_reset_refine.setEnabled(False)
+        toolbar.addWidget(self._btn_reset_refine)
 
         self._btn_save = QPushButton("Save")
         self._btn_save.setEnabled(False)
@@ -104,6 +100,7 @@ class MainWindow(QMainWindow):
         self._combo_files.currentIndexChanged.connect(self._on_file_selected)
         self._btn_fit.clicked.connect(self._on_fit_spline)
         self._btn_refine.clicked.connect(self._on_refine)
+        self._btn_reset_refine.clicked.connect(self._on_reset_refine)
         self._btn_save.clicked.connect(self._on_save)
         self._btn_clear.clicked.connect(self._on_clear)
         self._viewer.seeds_changed.connect(self._on_seeds_changed)
@@ -170,21 +167,34 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Spline error", str(exc))
             return
         self._viewer.draw_spline(self._spline_indices)
+        self._viewer.clear_refined()
         self._btn_refine.setEnabled(True)
         self._btn_save.setEnabled(True)
+        self._btn_reset_refine.setEnabled(False)
         self._refined_indices = None
         self._status.showMessage("Spline fitted. Press Fine-tune or Save.")
 
     def _on_refine(self):
         if self._spline_indices is None or self._current_data is None:
             return
-        delta = self._spin_delta.value()
         self._refined_indices = refine_boundary(
-            self._current_data, self._spline_indices, delta=delta
+            self._current_data, self._spline_indices
         )
         self._viewer.draw_refined(self._refined_indices)
         self._btn_save.setEnabled(True)
+        self._btn_reset_refine.setEnabled(True)
         self._status.showMessage("Boundary refined via gradient snap. Press Save to export.")
+
+    def _on_reset_refine(self):
+        """Discard the refined curve and revert to the raw spline."""
+        self._refined_indices = None
+        self._viewer.clear_refined()
+        self._btn_reset_refine.setEnabled(False)
+        if self._spline_indices is not None:
+            self._btn_save.setEnabled(True)
+            self._status.showMessage("Fine-tuning reset. Showing raw spline.")
+        else:
+            self._btn_save.setEnabled(False)
 
     def _on_save(self):
         indices = self._refined_indices if self._refined_indices is not None else self._spline_indices
@@ -208,6 +218,7 @@ class MainWindow(QMainWindow):
         self._refined_indices = None
         self._btn_fit.setEnabled(False)
         self._btn_refine.setEnabled(False)
+        self._btn_reset_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
         self._status.showMessage("Seeds cleared.")
 
