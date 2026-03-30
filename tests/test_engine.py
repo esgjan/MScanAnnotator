@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from oct_annotator.engine import fit_spline, refine_boundary
+from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +171,40 @@ class TestNaNSentinel:
         # Non-masked columns should NOT be sentinel (extremely unlikely by chance)
         assert not np.any(loaded[:80, 0] == NAN_SENTINEL)
         assert not np.any(loaded[121:, 0] == NAN_SENTINEL)
+
+
+# ---------------------------------------------------------------------------
+# PNG export test
+# ---------------------------------------------------------------------------
+
+class TestRenderAnnotationPng:
+    """Verify PNG export produces a file."""
+
+    def test_png_is_created(self, tmp_path: Path):
+        rows, cols = 100, 200
+        m_scan = np.random.rand(rows, cols).astype(np.float64)
+        ann = np.full(cols, 50, dtype=np.uint16)
+        nan_mask = np.zeros(cols, dtype=np.bool_)
+        nan_mask[80:100] = True
+        ann[nan_mask] = NAN_SENTINEL
+
+        out = tmp_path / "test_overlay.png"
+        render_annotation_png(m_scan, ann, nan_mask, str(out))
+
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# Annotation-length matching test
+# ---------------------------------------------------------------------------
+
+class TestAnnotationLength:
+    """Ensure spline output length always matches the requested width."""
+
+    def test_spline_matches_width(self):
+        xs = np.array([0.0, 256.0, 511.0])
+        ys = np.array([100.0, 120.0, 110.0])
+        for width in [512, 1000, 256]:
+            result = fit_spline(xs, ys, width=width)
+            assert result.shape == (width,), f"Expected length {width}, got {result.shape}"

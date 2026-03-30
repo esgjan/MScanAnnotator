@@ -87,3 +87,64 @@ def refine_boundary(
     refined = y_init + offsets[best_offset]
 
     return refined.astype(np.uint16)
+
+
+# ---------------------------------------------------------------------------
+#  PNG export
+# ---------------------------------------------------------------------------
+
+_NAN_SENTINEL = np.uint16(65535)
+
+
+def render_annotation_png(
+    m_scan: NDArray,
+    annotation: NDArray[np.uint16],
+    nan_mask: NDArray[np.bool_],
+    out_path: str,
+    line_color: tuple = (0, 255, 100),
+    line_thickness: int = 2,
+) -> None:
+    """Save a PNG showing the M-scan with only the final annotation boundary.
+
+    Parameters
+    ----------
+    m_scan       : 2-D float array (rows x cols), the M-scan.
+    annotation   : 1-D uint16 array (cols,); sentinel columns are skipped.
+    nan_mask     : bool array (cols,); True = excluded column.
+    out_path     : file path for the output PNG.
+    line_color   : RGB tuple for the boundary line.
+    line_thickness : pixel width of the boundary line.
+    """
+    rows, cols = m_scan.shape
+
+    # Normalise M-scan to 0-255 and convert to RGB
+    lo, hi = float(m_scan.min()), float(m_scan.max())
+    if hi - lo > 0:
+        gray = ((m_scan - lo) / (hi - lo) * 255).astype(np.uint8)
+    else:
+        gray = np.zeros((rows, cols), dtype=np.uint8)
+    rgb = np.stack([gray, gray, gray], axis=-1)  # (rows, cols, 3)
+
+    # Draw the boundary line (skip NaN columns)
+    ann = annotation.reshape(-1)
+    r, g, b = line_color
+    half = line_thickness // 2
+    for x in range(cols):
+        if nan_mask[x] or ann[x] == _NAN_SENTINEL:
+            continue
+        y_center = int(ann[x])
+        y_lo = max(0, y_center - half)
+        y_hi = min(rows, y_center + half + 1)
+        rgb[y_lo:y_hi, x] = [r, g, b]
+
+    # Write PNG using PyQt6's QImage (avoids extra dependencies)
+    from PyQt6.QtGui import QImage
+    img_data = np.ascontiguousarray(rgb)
+    qimage = QImage(
+        img_data.data,
+        cols,
+        rows,
+        cols * 3,
+        QImage.Format.Format_RGB888,
+    )
+    qimage.save(out_path, "PNG")

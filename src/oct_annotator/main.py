@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from oct_annotator.viewer import MScanViewer
-from oct_annotator.engine import fit_spline, refine_boundary
+from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png
 
 # Sentinel value written into uint16 annotations for NaN / excluded columns
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
@@ -207,7 +207,8 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Spline error", str(exc))
             return
-        self._viewer.draw_spline(self._spline_indices)
+        nan_mask = self._viewer.get_nan_column_mask(width)
+        self._viewer.draw_spline(self._spline_indices, nan_mask)
         self._viewer.clear_refined()
         self._btn_refine.setEnabled(True)
         self._btn_save.setEnabled(True)
@@ -221,7 +222,8 @@ class MainWindow(QMainWindow):
         self._refined_indices = refine_boundary(
             self._current_data, self._spline_indices
         )
-        self._viewer.draw_refined(self._refined_indices)
+        nan_mask = self._viewer.get_nan_column_mask(self._viewer.image_width)
+        self._viewer.draw_refined(self._refined_indices, nan_mask)
         self._btn_save.setEnabled(True)
         self._btn_reset_refine.setEnabled(True)
         self._status.showMessage("Boundary refined via gradient snap. Press Save to export.")
@@ -239,24 +241,41 @@ class MainWindow(QMainWindow):
 
     def _on_save(self):
         indices = self._refined_indices if self._refined_indices is not None else self._spline_indices
-        if indices is None:
+        if indices is None or self._current_data is None:
             return
 
         current_idx = self._combo_files.currentIndex()
         src_path = self._npy_files[current_idx]
-        out_name = src_path.stem + "_annotations.npy"
-        out_path = src_path.parent / out_name
+        m_scan = self._current_data
+        rows, cols = m_scan.shape
 
-        # Build uint16 annotation array; mark NaN-window columns with sentinel
-        to_save = indices.astype(np.uint16).reshape(-1)
-        nan_mask = self._viewer.get_nan_column_mask(len(to_save))
-        to_save[nan_mask] = NAN_SENTINEL
-        to_save = to_save.reshape(-1, 1)
+        # Ensure annotation length matches the number of A-scans (columns)
+        ann = indices.astype(np.uint16).reshape(-1)
+        if len(ann) != cols:
+            ann_resized = np.full(cols, NAN_SENTINEL, dtype=np.uint16)
+            n = min(len(ann), cols)
+            ann_resized[:n] = ann[:n]
+            ann = ann_resized
 
-        np.save(str(out_path), to_save)
+        # Apply NaN-window sentinel
+        nan_mask = self._viewer.get_nan_column_mask(cols)
+        ann[nan_mask] = NAN_SENTINEL
+        to_save = ann.reshape(-1, 1)
+
+        # Save .npy annotation
+        out_npy = src_path.parent / (src_path.stem + "_annotations.npy")
+        np.save(str(out_npy), to_save)
+
+        # Save .png visual overlay
+        out_png = src_path.parent / (src_path.stem + "_annotations.png")
+        render_annotation_png(m_scan, ann, nan_mask, str(out_png))
+
         n_nan = int(nan_mask.sum())
-        nan_note = f"  ({n_nan} columns marked as NaN/excluded)" if n_nan else ""
-        self._status.showMessage(f"Saved \u2192 {out_path.name}  (shape {to_save.shape}){nan_note}")
+        nan_note = f"  ({n_nan} cols excluded)" if n_nan else ""
+        self._status.showMessage(
+            f"Saved \u2192 {out_npy.name} + {out_png.name}  "
+            f"(shape {to_save.shape}){nan_note}"
+        )
 
     # ---- NaN window slots ----------------------------------------------
 
@@ -275,6 +294,17 @@ class MainWindow(QMainWindow):
         self._btn_remove_nan.setEnabled(n > 0)
         self._btn_clear_nan.setEnabled(n > 0)
         self._lbl_nan_info.setText(f"{n} NaN window(s)" if n else "")
+        # Redraw active curves with updated NaN gaps
+        self._redraw_curves()
+
+    def _redraw_curves(self):
+        """Re-render spline/refined overlays respecting current NaN mask."""
+        width = self._viewer.image_width
+        nan_mask = self._viewer.get_nan_column_mask(width) if width > 0 else None
+        if self._spline_indices is not None:
+            self._viewer.draw_spline(self._spline_indices, nan_mask)
+        if self._refined_indices is not None:
+            self._viewer.draw_refined(self._refined_indices, nan_mask)
 
     def _on_clear(self):
         self._viewer.clear_seeds()

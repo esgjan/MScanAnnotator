@@ -167,15 +167,15 @@ class MScanViewer(QGraphicsView):
             return 0
         return self._image_shape[0]
 
-    def draw_spline(self, y_indices: NDArray) -> None:
-        """Overlay a spline curve on the image."""
+    def draw_spline(self, y_indices: NDArray, nan_mask: NDArray[np.bool_] | None = None) -> None:
+        """Overlay a spline curve on the image, with gaps for NaN regions."""
         self._remove_item(self._spline_path_item)
-        self._spline_path_item = self._add_curve(y_indices, SPLINE_COLOR, 1.5)
+        self._spline_path_item = self._add_curve(y_indices, SPLINE_COLOR, 1.5, nan_mask)
 
-    def draw_refined(self, y_indices: NDArray) -> None:
-        """Overlay a refined boundary curve on the image."""
+    def draw_refined(self, y_indices: NDArray, nan_mask: NDArray[np.bool_] | None = None) -> None:
+        """Overlay a refined boundary curve on the image, with gaps for NaN regions."""
         self._remove_item(self._refined_path_item)
-        self._refined_path_item = self._add_curve(y_indices, REFINED_COLOR, 1.5)
+        self._refined_path_item = self._add_curve(y_indices, REFINED_COLOR, 1.5, nan_mask)
 
     def clear_overlays(self) -> None:
         self._remove_item(self._spline_path_item)
@@ -352,11 +352,19 @@ class MScanViewer(QGraphicsView):
 
     # ---- helpers ------------------------------------------------------
 
-    def _add_curve(self, y_indices: NDArray, color: QColor, width: float) -> QGraphicsPathItem:
+    def _add_curve(self, y_indices: NDArray, color: QColor, width: float,
+                   nan_mask: NDArray[np.bool_] | None = None) -> QGraphicsPathItem:
         path = QPainterPath()
-        path.moveTo(QPointF(0, float(y_indices[0])))
-        for x in range(1, len(y_indices)):
-            path.lineTo(QPointF(float(x), float(y_indices[x])))
+        in_segment = False
+        for x in range(len(y_indices)):
+            if nan_mask is not None and nan_mask[x]:
+                in_segment = False
+                continue
+            if not in_segment:
+                path.moveTo(QPointF(float(x), float(y_indices[x])))
+                in_segment = True
+            else:
+                path.lineTo(QPointF(float(x), float(y_indices[x])))
         pen = QPen(color, width)
         pen.setCosmetic(True)  # constant screen-width regardless of zoom
         item = self._scene.addPath(path, pen)
