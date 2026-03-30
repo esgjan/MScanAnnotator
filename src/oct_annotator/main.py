@@ -27,6 +27,9 @@ from PyQt6.QtWidgets import (
 from oct_annotator.viewer import MScanViewer
 from oct_annotator.engine import fit_spline, refine_boundary
 
+# Sentinel value written into uint16 annotations for NaN / excluded columns
+NAN_SENTINEL: np.uint16 = np.uint16(65535)
+
 
 class MainWindow(QMainWindow):
     def __init__(self, directory: str | None = None):
@@ -84,6 +87,32 @@ class MainWindow(QMainWindow):
         self._btn_clear = QPushButton("Clear Seeds")
         toolbar.addWidget(self._btn_clear)
 
+        # Second toolbar row — zoom & NaN windows
+        toolbar2 = QHBoxLayout()
+        root.addLayout(toolbar2)
+
+        self._btn_zoom_fit = QPushButton("Zoom Fit")
+        self._btn_zoom_fit.setToolTip("Reset zoom to fit entire image (also: middle-click)")
+        toolbar2.addWidget(self._btn_zoom_fit)
+
+        toolbar2.addStretch(1)
+
+        self._btn_add_nan = QPushButton("Add NaN Window")
+        self._btn_add_nan.setEnabled(False)
+        self._btn_add_nan.setToolTip("Add a pair of draggable vertical bars to mark excluded columns")
+        toolbar2.addWidget(self._btn_add_nan)
+
+        self._btn_remove_nan = QPushButton("Remove Last NaN Window")
+        self._btn_remove_nan.setEnabled(False)
+        toolbar2.addWidget(self._btn_remove_nan)
+
+        self._btn_clear_nan = QPushButton("Clear All NaN Windows")
+        self._btn_clear_nan.setEnabled(False)
+        toolbar2.addWidget(self._btn_clear_nan)
+
+        self._lbl_nan_info = QLabel("")
+        toolbar2.addWidget(self._lbl_nan_info)
+
         # Viewer
         self._viewer = MScanViewer()
         root.addWidget(self._viewer, stretch=1)
@@ -91,7 +120,10 @@ class MainWindow(QMainWindow):
         # Status bar
         self._status = QStatusBar()
         self.setStatusBar(self._status)
-        self._status.showMessage("Open a folder containing .npy M-scan files to begin.")
+        self._status.showMessage(
+            "Open a folder containing .npy M-scan files to begin.  "
+            "Right-drag to zoom into a region · Middle-click to reset zoom."
+        )
 
     # ---- Signals -------------------------------------------------------
 
@@ -103,7 +135,12 @@ class MainWindow(QMainWindow):
         self._btn_reset_refine.clicked.connect(self._on_reset_refine)
         self._btn_save.clicked.connect(self._on_save)
         self._btn_clear.clicked.connect(self._on_clear)
+        self._btn_zoom_fit.clicked.connect(self._viewer.zoom_fit)
+        self._btn_add_nan.clicked.connect(self._on_add_nan_window)
+        self._btn_remove_nan.clicked.connect(self._on_remove_nan_window)
+        self._btn_clear_nan.clicked.connect(self._on_clear_nan_windows)
         self._viewer.seeds_changed.connect(self._on_seeds_changed)
+        self._viewer.nan_windows_changed.connect(self._on_nan_windows_changed)
 
     # ---- Slots ---------------------------------------------------------
 
@@ -142,6 +179,10 @@ class MainWindow(QMainWindow):
         self._btn_fit.setEnabled(False)
         self._btn_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
+        self._btn_add_nan.setEnabled(True)
+        self._btn_remove_nan.setEnabled(False)
+        self._btn_clear_nan.setEnabled(False)
+        self._lbl_nan_info.setText("")
 
         self._viewer.set_image(self._current_data)
         self._status.showMessage(
@@ -206,20 +247,48 @@ class MainWindow(QMainWindow):
         out_name = src_path.stem + "_annotations.npy"
         out_path = src_path.parent / out_name
 
-        # Save as (width, 1) uint16
-        to_save = indices.astype(np.uint16).reshape(-1, 1)
+        # Build uint16 annotation array; mark NaN-window columns with sentinel
+        to_save = indices.astype(np.uint16).reshape(-1)
+        nan_mask = self._viewer.get_nan_column_mask(len(to_save))
+        to_save[nan_mask] = NAN_SENTINEL
+        to_save = to_save.reshape(-1, 1)
+
         np.save(str(out_path), to_save)
-        self._status.showMessage(f"Saved → {out_path.name}  (shape {to_save.shape})")
+        n_nan = int(nan_mask.sum())
+        nan_note = f"  ({n_nan} columns marked as NaN/excluded)" if n_nan else ""
+        self._status.showMessage(f"Saved \u2192 {out_path.name}  (shape {to_save.shape}){nan_note}")
+
+    # ---- NaN window slots ----------------------------------------------
+
+    def _on_add_nan_window(self):
+        self._viewer.add_nan_window()
+
+    def _on_remove_nan_window(self):
+        self._viewer.remove_last_nan_window()
+
+    def _on_clear_nan_windows(self):
+        self._viewer.clear_nan_windows()
+        self._viewer.nan_windows_changed.emit()
+
+    def _on_nan_windows_changed(self):
+        n = len(self._viewer.nan_windows)
+        self._btn_remove_nan.setEnabled(n > 0)
+        self._btn_clear_nan.setEnabled(n > 0)
+        self._lbl_nan_info.setText(f"{n} NaN window(s)" if n else "")
 
     def _on_clear(self):
         self._viewer.clear_seeds()
         self._viewer.clear_overlays()
+        self._viewer.clear_nan_windows()
         self._spline_indices = None
         self._refined_indices = None
         self._btn_fit.setEnabled(False)
         self._btn_refine.setEnabled(False)
         self._btn_reset_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
+        self._btn_remove_nan.setEnabled(False)
+        self._btn_clear_nan.setEnabled(False)
+        self._lbl_nan_info.setText("")
         self._status.showMessage("Seeds cleared.")
 
 

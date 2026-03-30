@@ -134,3 +134,40 @@ class TestPerformance:
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         assert elapsed_ms < 100, f"Refinement took {elapsed_ms:.1f} ms (limit 100 ms)"
+
+
+# ---------------------------------------------------------------------------
+# NaN-sentinel integration test
+# ---------------------------------------------------------------------------
+
+NAN_SENTINEL = np.uint16(65535)
+
+
+class TestNaNSentinel:
+    """Verify that NaN-window columns get the 65535 sentinel in saved output."""
+
+    def test_sentinel_applied_to_masked_columns(self, tmp_path: Path):
+        data = np.random.rand(100, 200).astype(np.float64)
+        xs = np.array([0.0, 100.0, 199.0])
+        ys = np.array([50.0, 55.0, 52.0])
+        spline = fit_spline(xs, ys, width=200)
+        refined = refine_boundary(data, spline)
+
+        # Simulate a NaN mask covering columns 80-120
+        to_save = refined.astype(np.uint16).reshape(-1)
+        nan_mask = np.zeros(200, dtype=np.bool_)
+        nan_mask[80:121] = True
+        to_save[nan_mask] = NAN_SENTINEL
+        to_save = to_save.reshape(-1, 1)
+
+        out_path = tmp_path / "test_annotations.npy"
+        np.save(str(out_path), to_save)
+
+        loaded = np.load(str(out_path))
+        assert loaded.dtype == np.uint16
+        assert loaded.shape == (200, 1)
+        # Masked columns should be sentinel
+        assert np.all(loaded[80:121, 0] == NAN_SENTINEL)
+        # Non-masked columns should NOT be sentinel (extremely unlikely by chance)
+        assert not np.any(loaded[:80, 0] == NAN_SENTINEL)
+        assert not np.any(loaded[121:, 0] == NAN_SENTINEL)
