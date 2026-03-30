@@ -279,7 +279,7 @@ class MScanViewer(QGraphicsView):
     # ---- interaction --------------------------------------------------
 
     def mousePressEvent(self, event: QMouseEvent):
-        # Right-click: start rubber-band zoom
+        # Right-click: start rubber-band zoom - I didn't know that was possible :D
         if event.button() == Qt.MouseButton.RightButton:
             self._rb_origin = event.pos()
             if self._rubber_band is None:
@@ -293,7 +293,8 @@ class MScanViewer(QGraphicsView):
             self.zoom_fit()
             return
 
-        # Left-click: place seed (only if not clicking on a draggable bar)
+        ## Annotate single data point
+        # Left-click: place seed (only if not clicking on a draggable bar) 
         if event.button() == Qt.MouseButton.LeftButton and self._pixmap_item is not None:
             # Let scene handle movable items first
             item_under = self.itemAt(event.pos())

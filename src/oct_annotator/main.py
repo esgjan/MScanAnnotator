@@ -277,7 +277,25 @@ class MainWindow(QMainWindow):
             f"(shape {to_save.shape}){nan_note}"
         )
 
-    # ---- NaN window slots ----------------------------------------------
+        # Refresh the file list so newly created .npy files appear
+        self._refresh_file_list()
+
+    def _refresh_file_list(self) -> None:
+        """Re-scan the current directory and update the dropdown, keeping selection."""
+        if not self._npy_files:
+            return
+        folder = self._npy_files[0].parent
+        current_name = self._combo_files.currentText()
+        self._npy_files = sorted(folder.glob("*.npy"))
+        self._combo_files.blockSignals(True)
+        self._combo_files.clear()
+        restore_idx = 0
+        for i, f in enumerate(self._npy_files):
+            self._combo_files.addItem(f.name)
+            if f.name == current_name:
+                restore_idx = i
+        self._combo_files.setCurrentIndex(restore_idx)
+        self._combo_files.blockSignals(False)
 
     def _on_add_nan_window(self):
         self._viewer.add_nan_window()
