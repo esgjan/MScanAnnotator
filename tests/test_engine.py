@@ -108,12 +108,15 @@ class TestIntegrationSaveLoad:
         refined = refine_boundary(data, spline)
 
         # Save as the app would
+        out_dir = tmp_path / "annotated"
+        out_dir.mkdir()
         out_name = src.stem + "_annotations.npy"
-        out_path = tmp_path / out_name
+        out_path = out_dir / out_name
         np.save(str(out_path), refined.astype(np.uint16).reshape(-1, 1))
 
         # Verify
         assert out_path.exists()
+        assert out_path.parent == out_dir
         assert "_annotations.npy" in out_path.name
         loaded = np.load(str(out_path))
         assert loaded.shape == (200, 1)

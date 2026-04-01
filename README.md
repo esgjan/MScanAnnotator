@@ -7,10 +7,17 @@ A lightweight, callable desktop tool for annotating retinal layer boundaries in 
 ## Features
 
 - **PyQt6 GUI** — native High-DPI rendering on Windows/macOS/Linux
-- **B-spline interpolation** — `scipy.interpolate.splprep` gives a smooth curve through any number of seed clicks
+- **Automatic spline updates** — a smooth interpolating spline is redrawn after every seed edit; no separate fit step required
 - **Gradient fine-tuning** — each A-scan column snaps to the local intensity-gradient peak within a configurable ±δ window
+- **Experiment-friendly output layout** — saved annotations and overlay PNGs go to an `annotated/` subfolder, while flagged scans go to `2hard2label/`
+- **Fast review workflow** — saving or flagging a scan automatically advances to the next source file and can continue into the next sibling experiment folder
+- **Clean file list** — only source `*.npy` scans appear in the dropdown; generated `*_annotations.npy` files are excluded
+- **Improved seed editing** — right-click removes the latest seed, right-clicking a seed removes that exact seed, and duplicate X-columns are ignored
+- **NaN window tools** — create multiple exclusion windows with automatic color cycling; excluded columns are exported with a sentinel value
+- **Too-hard triage** — one action copies the source scan to `2hard2label/`, writes a PNG preview, and advances to the next file
+- **Keyboard shortcuts** — `A` fine-tunes, `D` saves, `F` marks the scan as too hard
 - **Scroll-to-zoom** — inspect individual A-scans at any magnification
-- **One-click save** — exports a `(width × 1) uint16` annotation array alongside the source file
+- **Pan and reset controls** — hold left + right mouse buttons to pan; middle-click resets zoom to fit
 - **CLI entry point** — `oct-annotate [<folder>]` launches the app directly from the terminal
 - **CI-ready** — Azure Pipelines YAML included for automated testing and wheel builds
 
@@ -84,19 +91,64 @@ oct-annotate                      # opens a folder-picker dialog
 oct-annotate "C:/path/to/scans"   # opens directly with the given folder
 ```
 
+On Windows, the included launcher scripts start the app with the default scan directory at `D:\iiOCT_data\npy`.
+
+### Windows batch launcher
+
+`start_oct_annotate.bat` is a simple Windows launcher for users who want to start the app by double-clicking a file instead of opening a terminal.
+
+Before another user runs it, update these lines inside the batch file:
+
+- `cd /d "..."` should point to that user's local `MScanAnnotator` folder
+- `call ".venv\Scripts\activate.bat"` assumes the project virtual environment is stored in `.venv`
+- `oct-annotate "..."` should point to the default scan folder that should open at startup
+
+Example:
+
+```bat
+@echo off
+cd /d "C:\Users\Alice\git\MScanAnnotator"
+call ".venv\Scripts\activate.bat"
+oct-annotate "D:\iiOCT_data\npy"
+```
+
+If a user does not want to edit the batch file, they can skip it and run the app directly from a terminal instead:
+
+```bash
+oct-annotate
+oct-annotate "D:/iiOCT_data/npy"
+```
+
 ### Annotation workflow
 
-1. **Open folder** — select a directory containing `*.npy` M-scan files  
+1. **Open folder** — select a directory containing source `*.npy` M-scan files  
    *(expected shape: `rows × columns`, float64, values in [0, 1])*
-2. **Place seeds** — left-click on the image to mark boundary control points (red dots)
-3. **Fit Spline** — fits a cubic B-spline through the seeds (green curve)
-4. **Fine-tune** — snaps each A-scan point to the nearest gradient peak within ±δ pixels (blue curve); adjust δ with the spin-box
-5. **Save** — writes `<source_stem>_annotations.npy` (`shape: columns × 1, dtype: uint16`) next to the source file
+2. **Review the file list** — the dropdown shows only source scans and hides generated `*_annotations.npy` files
+3. **Place seeds** — left-click on the image to mark boundary control points (red dots); the spline updates automatically once at least two seeds exist
+4. **Edit seeds quickly** — right-click removes the most recent seed, or right-click directly on an existing seed to remove that exact point
+5. **Fine-tune** — press `A` or click **Fine-tune** to snap each A-scan point to the nearest gradient peak (blue curve)
+6. **Mark excluded regions** — add one or more NaN windows for columns that should export as the NaN sentinel value `65535`
+7. **Save** — press `D` or click **Save** to write:
+   - `annotated/<source_stem>_annotations.npy`
+   - `annotated/<source_stem>_annotations.png`
+   The next file is loaded automatically after saving.
+8. **Flag difficult scans** — press `F` or click **Too Hard** to copy the original scan into `2hard2label/`, generate a PNG preview, and continue to the next file
+
+If the current folder is exhausted, the app attempts to open the next sibling experiment folder that contains source scans.
+
+### Interaction details
+
+- **Left-click** — place a seed point
+- **Right-click** — remove the last seed, or remove the clicked seed directly
+- **Left + right mouse buttons** — pan the image
+- **Middle-click** — reset zoom to fit
+- **Duplicate seed X positions** — ignored silently to keep the spline well-formed
 
 ### Scroll / zoom
 
 - **Scroll wheel** — zoom in/out centred on the cursor
 - The image auto-fits the window on load and resize
+- NaN windows can be repositioned freely, including all the way to the left edge
 
 ---
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import List
@@ -29,6 +30,7 @@ from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_
 
 # Sentinel value written into uint16 annotations for NaN / excluded columns
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
+DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy")
 
 
 class MainWindow(QMainWindow):
@@ -49,6 +51,19 @@ class MainWindow(QMainWindow):
         if directory:
             self._load_directory(directory)
 
+    @staticmethod
+    def _is_source_scan(path: Path) -> bool:
+        return path.suffix == ".npy" and not path.stem.endswith("_annotations")
+
+    @staticmethod
+    def _annotation_output_dir(source_path: Path) -> Path:
+        return source_path.parent / "annotated"
+
+    @staticmethod
+    def _too_hard_output_dir(source_path: Path) -> Path:
+        # Keep flagged files alongside the current experiment folder.
+        return source_path.parent / "2hard2label"
+
     # ---- UI construction -----------------------------------------------
 
     def _build_ui(self):
@@ -68,12 +83,10 @@ class MainWindow(QMainWindow):
         self._combo_files.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         toolbar.addWidget(self._combo_files, stretch=1)
 
-        self._btn_fit = QPushButton("Fit Spline")
-        self._btn_fit.setEnabled(False)
-        toolbar.addWidget(self._btn_fit)
-
         self._btn_refine = QPushButton("Fine-tune")
         self._btn_refine.setEnabled(False)
+        self._btn_refine.setShortcut("A")
+        self._btn_refine.setToolTip("Fine-tune boundary (A)")
         toolbar.addWidget(self._btn_refine)
 
         self._btn_reset_refine = QPushButton("Reset Fine-tuning")
@@ -82,7 +95,16 @@ class MainWindow(QMainWindow):
 
         self._btn_save = QPushButton("Save")
         self._btn_save.setEnabled(False)
+        self._btn_save.setShortcut("D")
+        self._btn_save.setToolTip("Save annotation (D)")
         toolbar.addWidget(self._btn_save)
+
+        self._btn_flag = QPushButton("Too Hard (F)")
+        self._btn_flag.setEnabled(False)
+        self._btn_flag.setShortcut("F")
+        self._btn_flag.setToolTip("Flag scan as too hard to label – copies it to 2hard2label/ and skips to next (F)")
+        self._btn_flag.setStyleSheet("color: #c0392b; font-weight: bold;")
+        toolbar.addWidget(self._btn_flag)
 
         self._btn_clear = QPushButton("Clear Seeds")
         toolbar.addWidget(self._btn_clear)
@@ -122,7 +144,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status)
         self._status.showMessage(
             "Open a folder containing .npy M-scan files to begin.  "
-            "Right-drag to zoom into a region · Middle-click to reset zoom."
+            "Right-click removes the last seed · Middle-click resets zoom."
         )
 
     # ---- Signals -------------------------------------------------------
@@ -130,10 +152,10 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self._btn_open.clicked.connect(self._on_open)
         self._combo_files.currentIndexChanged.connect(self._on_file_selected)
-        self._btn_fit.clicked.connect(self._on_fit_spline)
         self._btn_refine.clicked.connect(self._on_refine)
         self._btn_reset_refine.clicked.connect(self._on_reset_refine)
         self._btn_save.clicked.connect(self._on_save)
+        self._btn_flag.clicked.connect(self._on_flag_too_hard)
         self._btn_clear.clicked.connect(self._on_clear)
         self._btn_zoom_fit.clicked.connect(self._viewer.zoom_fit)
         self._btn_add_nan.clicked.connect(self._on_add_nan_window)
@@ -145,13 +167,21 @@ class MainWindow(QMainWindow):
     # ---- Slots ---------------------------------------------------------
 
     def _on_open(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select M-scan directory")
+        start_dir = self._initial_open_directory()
+        directory = QFileDialog.getExistingDirectory(self, "Select M-scan directory", str(start_dir))
         if directory:
             self._load_directory(directory)
 
+    def _initial_open_directory(self) -> Path:
+        if self._npy_files:
+            return self._npy_files[0].parent
+        if DEFAULT_SCAN_DIRECTORY.exists():
+            return DEFAULT_SCAN_DIRECTORY
+        return Path.home()
+
     def _load_directory(self, directory: str):
         folder = Path(directory)
-        self._npy_files = sorted(folder.glob("*.npy"))
+        self._npy_files = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
         self._combo_files.blockSignals(True)
         self._combo_files.clear()
         for f in self._npy_files:
@@ -164,9 +194,27 @@ class MainWindow(QMainWindow):
         else:
             self._status.showMessage("No .npy files found in the selected folder.")
 
+    def _find_next_experiment_directory(self, current_directory: Path) -> Path | None:
+        parent = current_directory.parent
+        sibling_dirs = sorted(path for path in parent.iterdir() if path.is_dir())
+
+        try:
+            current_index = sibling_dirs.index(current_directory)
+        except ValueError:
+            return None
+
+        for candidate in sibling_dirs[current_index + 1:]:
+            has_source_scans = any(
+                self._is_source_scan(path) for path in candidate.glob("*.npy")
+            )
+            if has_source_scans:
+                return candidate
+        return None
+
     def _on_file_selected(self, index: int):
         if index < 0 or index >= len(self._npy_files):
             return
+        self._btn_flag.setEnabled(True)
         path = self._npy_files[index]
         try:
             self._current_data = np.load(str(path)).astype(np.float64)
@@ -176,7 +224,6 @@ class MainWindow(QMainWindow):
 
         self._spline_indices = None
         self._refined_indices = None
-        self._btn_fit.setEnabled(False)
         self._btn_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
         self._btn_add_nan.setEnabled(True)
@@ -187,12 +234,20 @@ class MainWindow(QMainWindow):
         self._viewer.set_image(self._current_data)
         self._status.showMessage(
             f"Loaded {path.name}  —  shape {self._current_data.shape}  |  "
-            "Click on the image to place seed points, then Fit Spline."
+            "Click on the image to place seed points. Spline updates automatically."
         )
 
     def _on_seeds_changed(self):
         n = len(self._viewer.seeds)
-        self._btn_fit.setEnabled(n >= 2)
+        if n >= 2:
+            self._on_fit_spline()
+            return
+        self._spline_indices = None
+        self._refined_indices = None
+        self._viewer.clear_overlays()
+        self._btn_refine.setEnabled(False)
+        self._btn_reset_refine.setEnabled(False)
+        self._btn_save.setEnabled(False)
         self._status.showMessage(f"{n} seed point(s) placed.")
 
     def _on_fit_spline(self):
@@ -205,7 +260,7 @@ class MainWindow(QMainWindow):
         try:
             self._spline_indices = fit_spline(xs, ys, width)
         except Exception as exc:
-            QMessageBox.warning(self, "Spline error", str(exc))
+            self._status.showMessage(f"Spline update skipped: {exc}")
             return
         nan_mask = self._viewer.get_nan_column_mask(width)
         self._viewer.draw_spline(self._spline_indices, nan_mask)
@@ -214,7 +269,7 @@ class MainWindow(QMainWindow):
         self._btn_save.setEnabled(True)
         self._btn_reset_refine.setEnabled(False)
         self._refined_indices = None
-        self._status.showMessage("Spline fitted. Press Fine-tune or Save.")
+        self._status.showMessage("Spline updated automatically. Press Fine-tune or Save.")
 
     def _on_refine(self):
         if self._spline_indices is None or self._current_data is None:
@@ -263,22 +318,24 @@ class MainWindow(QMainWindow):
         to_save = ann.reshape(-1, 1)
 
         # Save .npy annotation
-        out_npy = src_path.parent / (src_path.stem + "_annotations.npy")
+        out_dir = self._annotation_output_dir(src_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        out_npy = out_dir / (src_path.stem + "_annotations.npy")
         np.save(str(out_npy), to_save)
 
         # Save .png visual overlay
-        out_png = src_path.parent / (src_path.stem + "_annotations.png")
+        out_png = out_dir / (src_path.stem + "_annotations.png")
         render_annotation_png(m_scan, ann, nan_mask, str(out_png))
 
         n_nan = int(nan_mask.sum())
         nan_note = f"  ({n_nan} cols excluded)" if n_nan else ""
         self._status.showMessage(
-            f"Saved \u2192 {out_npy.name} + {out_png.name}  "
+            f"Saved \u2192 {out_dir.name}/{out_npy.name} + {out_png.name}  "
             f"(shape {to_save.shape}){nan_note}"
         )
 
-        # Refresh the file list so newly created .npy files appear
-        self._refresh_file_list()
+        self._load_next_file(current_idx)
 
     def _refresh_file_list(self) -> None:
         """Re-scan the current directory and update the dropdown, keeping selection."""
@@ -286,7 +343,7 @@ class MainWindow(QMainWindow):
             return
         folder = self._npy_files[0].parent
         current_name = self._combo_files.currentText()
-        self._npy_files = sorted(folder.glob("*.npy"))
+        self._npy_files = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
         self._combo_files.blockSignals(True)
         self._combo_files.clear()
         restore_idx = 0
@@ -296,6 +353,49 @@ class MainWindow(QMainWindow):
                 restore_idx = i
         self._combo_files.setCurrentIndex(restore_idx)
         self._combo_files.blockSignals(False)
+
+    def _on_flag_too_hard(self):
+        current_idx = self._combo_files.currentIndex()
+        if current_idx < 0 or current_idx >= len(self._npy_files):
+            return
+        src_path = self._npy_files[current_idx]
+        dest_dir = self._too_hard_output_dir(src_path)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy original NPY into the experiment-local 2hard2label folder.
+        dest_path = dest_dir / src_path.name
+        shutil.copy2(str(src_path), str(dest_path))
+
+        # Also export a PNG preview of the current scan for quick triage.
+        if self._current_data is not None:
+            cols = self._current_data.shape[1]
+            blank_ann = np.full(cols, NAN_SENTINEL, dtype=np.uint16)
+            nan_mask = np.zeros(cols, dtype=np.bool_)
+            out_png = dest_dir / (src_path.stem + "_too_hard.png")
+            render_annotation_png(self._current_data, blank_ann, nan_mask, str(out_png))
+            self._status.showMessage(
+                f"Flagged → 2hard2label/{src_path.name} + {out_png.name}  – skipping to next file."
+            )
+        else:
+            self._status.showMessage(f"Flagged → 2hard2label/{src_path.name}  – skipping to next file.")
+
+        self._load_next_file(current_idx)
+
+    def _load_next_file(self, current_idx: int) -> None:
+        if current_idx + 1 >= len(self._npy_files):
+            if not self._npy_files:
+                return
+            current_directory = self._npy_files[0].parent
+            next_directory = self._find_next_experiment_directory(current_directory)
+            if next_directory is None:
+                self._status.showMessage("Saved last file in this experiment. No next experiment folder found.")
+                return
+            self._load_directory(str(next_directory))
+            self._status.showMessage(
+                f"Finished {current_directory.name}. Opened next experiment {next_directory.name} at first snippet."
+            )
+            return
+        self._combo_files.setCurrentIndex(current_idx + 1)
 
     def _on_add_nan_window(self):
         self._viewer.add_nan_window()
@@ -330,7 +430,6 @@ class MainWindow(QMainWindow):
         self._viewer.clear_nan_windows()
         self._spline_indices = None
         self._refined_indices = None
-        self._btn_fit.setEnabled(False)
         self._btn_refine.setEnabled(False)
         self._btn_reset_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
