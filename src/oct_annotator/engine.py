@@ -7,6 +7,10 @@ from numpy.typing import NDArray
 from scipy.interpolate import make_interp_spline
 
 
+_OCT_CLIP_MIN = 1.0
+_OCT_CLIP_MAX = 4.0
+
+
 def fit_spline(
     seed_xs: NDArray[np.float64],
     seed_ys: NDArray[np.float64],
@@ -96,6 +100,15 @@ def refine_boundary(
 _NAN_SENTINEL = np.uint16(65535)
 
 
+def to_preview_uint8(m_scan: NDArray) -> NDArray[np.uint8]:
+    """Convert raw OCT data to 8-bit preview data via clip+normalize."""
+    clipped = np.clip(m_scan.astype(np.float64, copy=False), _OCT_CLIP_MIN, _OCT_CLIP_MAX)
+    vmin, vmax = float(clipped.min()), float(clipped.max())
+    if vmax <= vmin:
+        return np.zeros(clipped.shape, dtype=np.uint8)
+    return np.round((clipped - vmin) / (vmax - vmin) * 255.0).astype(np.uint8)
+
+
 def render_annotation_png(
     m_scan: NDArray,
     annotation: NDArray[np.uint16],
@@ -117,12 +130,8 @@ def render_annotation_png(
     """
     rows, cols = m_scan.shape
 
-    # Normalise M-scan to 0-255 and convert to RGB
-    lo, hi = float(m_scan.min()), float(m_scan.max())
-    if hi - lo > 0:
-        gray = ((m_scan - lo) / (hi - lo) * 255).astype(np.uint8)
-    else:
-        gray = np.zeros((rows, cols), dtype=np.uint8)
+    # Match preview/export preprocessing to the DB analyzer.
+    gray = to_preview_uint8(m_scan)
     rgb = np.stack([gray, gray, gray], axis=-1)  # (rows, cols, 3)
 
     # Draw the boundary line (skip NaN columns)

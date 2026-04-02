@@ -20,6 +20,8 @@ from PyQt6.QtWidgets import (
     QGraphicsLineItem,
 )
 
+from oct_annotator.engine import to_preview_uint8
+
 
 SEED_RADIUS = 4
 SEED_COLOR = QColor(255, 50, 50)
@@ -142,12 +144,8 @@ class MScanViewer(QGraphicsView):
         rows, cols = data.shape
         self._image_shape = (rows, cols)
 
-        # Normalise to 0-255 uint8
-        lo, hi = float(data.min()), float(data.max())
-        if hi - lo > 0:
-            normed = ((data - lo) / (hi - lo) * 255).astype(np.uint8)
-        else:
-            normed = np.zeros_like(data, dtype=np.uint8)
+        # Keep preview transform consistent with PNG export.
+        normed = to_preview_uint8(data)
 
         qimage = QImage(
             normed.data.tobytes(),

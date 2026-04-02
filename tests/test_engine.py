@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png
+from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png, to_preview_uint8
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +196,25 @@ class TestRenderAnnotationPng:
 
         assert out.exists()
         assert out.stat().st_size > 0
+
+
+class TestPreviewConversion:
+    """Verify clip-to-[1,4] then normalize preprocessing used for preview/export."""
+
+    def test_clip_and_normalize_bounds(self):
+        data = np.array([[0.0, 1.0, 2.5, 4.0, 6.0]], dtype=np.float64)
+        out = to_preview_uint8(data)
+
+        assert out.dtype == np.uint8
+        # 0.0 clipped to 1.0 -> 0
+        assert int(out[0, 0]) == 0
+        # 1.0 -> 0
+        assert int(out[0, 1]) == 0
+        # 2.5 is midpoint of [1,4] -> around 127/128
+        assert int(out[0, 2]) in (127, 128)
+        # 4.0 and above clipped to max -> 255
+        assert int(out[0, 3]) == 255
+        assert int(out[0, 4]) == 255
 
 
 # ---------------------------------------------------------------------------

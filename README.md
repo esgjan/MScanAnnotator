@@ -99,18 +99,23 @@ On Windows, the included launcher scripts start the app with the default scan di
 
 Before another user runs it, update these lines inside the batch file:
 
-- `cd /d "..."` should point to that user's local `MScanAnnotator` folder
-- `call ".venv\Scripts\activate.bat"` assumes the project virtual environment is stored in `.venv`
-- `oct-annotate "..."` should point to the default scan folder that should open at startup
+- `PROJECT_DIR=...` should point to that user's local `MScanAnnotator` folder
+- `.venv\Scripts\python.exe` must exist inside that project folder
+- `src\oct_annotator\main.py` must exist inside that project folder
+- `DEFAULT_SCAN_DIR=...` should point to the default scan folder that should open at startup
 
 Example:
 
 ```bat
 @echo off
-cd /d "C:\Users\Alice\git\MScanAnnotator"
-call ".venv\Scripts\activate.bat"
-oct-annotate "D:\iiOCT_data\npy"
+set "PROJECT_DIR=C:\Users\Alice\git\MScanAnnotator"
+set "VENV_PYTHON=%PROJECT_DIR%\.venv\Scripts\python.exe"
+set "APP_ENTRY=%PROJECT_DIR%\src\oct_annotator\main.py"
+cd /d "%PROJECT_DIR%"
+"%VENV_PYTHON%" "%APP_ENTRY%" "D:\iiOCT_data\npy"
 ```
+
+For the shared project setup, this is the recommended Windows entry point. Users only need the project folder, the project `.venv`, and the batch file above.
 
 If a user does not want to edit the batch file, they can skip it and run the app directly from a terminal instead:
 

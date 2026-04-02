@@ -25,6 +25,13 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
+if __package__ in (None, ""):
+    # Support running this file directly: `python src/oct_annotator/main.py`.
+    package_root = Path(__file__).resolve().parents[1]
+    package_root_str = str(package_root)
+    if package_root_str not in sys.path:
+        sys.path.insert(0, package_root_str)
+
 from oct_annotator.viewer import MScanViewer
 from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png
 
