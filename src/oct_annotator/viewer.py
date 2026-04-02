@@ -144,7 +144,7 @@ class MScanViewer(QGraphicsView):
         rows, cols = data.shape
         self._image_shape = (rows, cols)
 
-        # Keep preview transform consistent with PNG export.
+        # Match DB-analyzer preprocessing for preview contrast.
         normed = to_preview_uint8(data)
 
         qimage = QImage(

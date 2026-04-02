@@ -101,12 +101,14 @@ _NAN_SENTINEL = np.uint16(65535)
 
 
 def to_preview_uint8(m_scan: NDArray) -> NDArray[np.uint8]:
-    """Convert raw OCT data to 8-bit preview data via clip+normalize."""
-    clipped = np.clip(m_scan.astype(np.float64, copy=False), _OCT_CLIP_MIN, _OCT_CLIP_MAX)
-    vmin, vmax = float(clipped.min()), float(clipped.max())
-    if vmax <= vmin:
-        return np.zeros(clipped.shape, dtype=np.uint8)
-    return np.round((clipped - vmin) / (vmax - vmin) * 255.0).astype(np.uint8)
+    """Convert raw OCT image to uint8 using DB-analyzer clip+normalize."""
+    img = np.clip(m_scan.astype(np.float64, copy=False), _OCT_CLIP_MIN, _OCT_CLIP_MAX)
+    vmin, vmax = float(img.min()), float(img.max())
+    if vmax > vmin:
+        disp = (img - vmin) / (vmax - vmin)
+    else:
+        disp = np.zeros_like(img)
+    return (disp * 255.0).astype(np.uint8)
 
 
 def render_annotation_png(
@@ -130,7 +132,7 @@ def render_annotation_png(
     """
     rows, cols = m_scan.shape
 
-    # Match preview/export preprocessing to the DB analyzer.
+    # Use the same clip+normalize pipeline as DB analyzer and UI preview.
     gray = to_preview_uint8(m_scan)
     rgb = np.stack([gray, gray, gray], axis=-1)  # (rows, cols, 3)
 
