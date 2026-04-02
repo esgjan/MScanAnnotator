@@ -156,6 +156,8 @@ class MScanViewer(QGraphicsView):
         )
         pixmap = QPixmap.fromImage(qimage)
         self._pixmap_item = self._scene.addPixmap(pixmap)
+        # Keep an explicit finite scene rect so view scrollbars stay responsive.
+        self._scene.setSceneRect(QRectF(0, 0, cols, rows))
         self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
 
     @property
@@ -307,7 +309,7 @@ class MScanViewer(QGraphicsView):
     def mousePressEvent(self, event: QMouseEvent):
         # Both buttons held → start panning
         both = Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton
-        if event.buttons() & both == both:
+        if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton) and event.buttons() == both:
             self._panning = True
             self._pan_start = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
@@ -328,7 +330,12 @@ class MScanViewer(QGraphicsView):
 
         ## Annotate single data point
         # Left-click: place seed (only if not clicking on a draggable bar) 
-        if event.button() == Qt.MouseButton.LeftButton and self._pixmap_item is not None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.buttons() == Qt.MouseButton.LeftButton
+            and not self._panning
+            and self._pixmap_item is not None
+        ):
             # Let scene handle movable items first
             item_under = self.itemAt(event.pos())
             if isinstance(item_under, _DraggableVLine):

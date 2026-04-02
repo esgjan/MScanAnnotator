@@ -373,15 +373,18 @@ class MainWindow(QMainWindow):
         dest_path = dest_dir / src_path.name
         shutil.copy2(str(src_path), str(dest_path))
 
-        # Also export a PNG preview of the current scan for quick triage.
+        # Export an all-NaN annotation so this sample is marked explicitly as "too hard".
         if self._current_data is not None:
             cols = self._current_data.shape[1]
             blank_ann = np.full(cols, NAN_SENTINEL, dtype=np.uint16)
+            out_ann_npy = dest_dir / (src_path.stem + "_annotations.npy")
+            np.save(str(out_ann_npy), blank_ann.reshape(-1, 1))
+
             nan_mask = np.zeros(cols, dtype=np.bool_)
-            out_png = dest_dir / (src_path.stem + "_too_hard.png")
+            out_png = dest_dir / (src_path.stem + "_annotations.png")
             render_annotation_png(self._current_data, blank_ann, nan_mask, str(out_png))
             self._status.showMessage(
-                f"Flagged → 2hard2label/{src_path.name} + {out_png.name}  – skipping to next file."
+                f"Flagged → 2hard2label/{src_path.name} + {out_ann_npy.name} + {out_png.name}  – skipping to next file."
             )
         else:
             self._status.showMessage(f"Flagged → 2hard2label/{src_path.name}  – skipping to next file.")
