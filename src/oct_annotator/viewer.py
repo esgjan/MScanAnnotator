@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import List, Tuple
-import math
 
 import numpy as np
 from numpy.typing import NDArray
@@ -25,7 +24,6 @@ from oct_annotator.engine import to_preview_uint8
 
 
 SEED_RADIUS = 4
-SEED_HITBOX_RADIUS_PX = 12
 SEED_COLOR = QColor(255, 50, 50)
 SPLINE_COLOR = QColor(0, 255, 100)
 REFINED_COLOR = QColor(50, 150, 255)
@@ -206,15 +204,6 @@ class MScanViewer(QGraphicsView):
         self._seeds.clear()
         self.seeds_changed.emit()
 
-    def set_seeds(self, seeds: List[Tuple[float, float]]) -> None:
-        for item in self._seed_items:
-            self._scene.removeItem(item)
-        self._seed_items.clear()
-        self._seeds.clear()
-        for x, y in seeds:
-            self._append_seed(float(x), float(y))
-        self.seeds_changed.emit()
-
     def remove_last_seed(self) -> bool:
         if not self._seed_items:
             return False
@@ -227,14 +216,6 @@ class MScanViewer(QGraphicsView):
         if item not in self._seed_items:
             return False
         idx = self._seed_items.index(item)
-        self._scene.removeItem(self._seed_items.pop(idx))
-        self._seeds.pop(idx)
-        self.seeds_changed.emit()
-        return True
-
-    def remove_seed_at_index(self, idx: int) -> bool:
-        if idx < 0 or idx >= len(self._seed_items):
-            return False
         self._scene.removeItem(self._seed_items.pop(idx))
         self._seeds.pop(idx)
         self.seeds_changed.emit()
@@ -335,9 +316,10 @@ class MScanViewer(QGraphicsView):
             return
 
         if event.button() == Qt.MouseButton.RightButton:
-            seed_idx = self._find_seed_index_near_view_pos(event.pos().x(), event.pos().y())
-            if seed_idx is not None and self.remove_seed_at_index(seed_idx):
-                return
+            item_under = self.itemAt(event.pos())
+            if isinstance(item_under, QGraphicsEllipseItem):
+                if self.remove_seed_item(item_under):
+                    return
             self.remove_last_seed()
             return
 
@@ -366,7 +348,16 @@ class MScanViewer(QGraphicsView):
                 x_col = int(round(x))
                 if any(int(round(seed_x)) == x_col for seed_x, _ in self._seeds):
                     return
-                self._append_seed(x, y)
+                self._seeds.append((x, y))
+                item = self._scene.addEllipse(
+                    x - SEED_RADIUS,
+                    y - SEED_RADIUS,
+                    SEED_RADIUS * 2,
+                    SEED_RADIUS * 2,
+                    QPen(SEED_COLOR),
+                    QBrush(SEED_COLOR),
+                )
+                self._seed_items.append(item)
                 self.seeds_changed.emit()
         super().mousePressEvent(event)
 
@@ -425,26 +416,3 @@ class MScanViewer(QGraphicsView):
     def _remove_item(self, item):
         if item is not None and item.scene() is not None:
             self._scene.removeItem(item)
-
-    def _append_seed(self, x: float, y: float) -> None:
-        self._seeds.append((x, y))
-        item = self._scene.addEllipse(
-            x - SEED_RADIUS,
-            y - SEED_RADIUS,
-            SEED_RADIUS * 2,
-            SEED_RADIUS * 2,
-            QPen(SEED_COLOR),
-            QBrush(SEED_COLOR),
-        )
-        self._seed_items.append(item)
-
-    def _find_seed_index_near_view_pos(self, view_x: int, view_y: int) -> int | None:
-        closest_idx = None
-        closest_distance = float("inf")
-        for idx, (seed_x, seed_y) in enumerate(self._seeds):
-            view_point = self.mapFromScene(QPointF(seed_x, seed_y))
-            distance = math.hypot(view_point.x() - view_x, view_point.y() - view_y)
-            if distance <= SEED_HITBOX_RADIUS_PX and distance < closest_distance:
-                closest_idx = idx
-                closest_distance = distance
-        return closest_idx

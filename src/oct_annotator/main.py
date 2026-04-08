@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -34,21 +33,11 @@ if __package__ in (None, ""):
         sys.path.insert(0, package_root_str)
 
 from oct_annotator.viewer import MScanViewer
-from oct_annotator.engine import (
-    fit_spline,
-    refine_boundary,
-    render_annotation_png,
-    sample_seed_points_from_annotation,
-)
+from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png
 
 # Sentinel value written into uint16 annotations for NaN / excluded columns
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
 DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy")
-FALLBACK_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy_raw_snippets")
-DEFAULT_DISTANCE_MASK_DIRECTORY = Path(r"D:\iiOCT_data\distance_masks")
-PRELOADED_MASK_SEED_COUNT = 16
-
-_SCAN_STEM_RE = re.compile(r"(?P<db>.+)_exp(?P<exp>\d+)_iioct(?:_snip(?P<snip>\d{3}))?$")
 
 
 class MainWindow(QMainWindow):
@@ -195,34 +184,7 @@ class MainWindow(QMainWindow):
             return self._npy_files[0].parent
         if DEFAULT_SCAN_DIRECTORY.exists():
             return DEFAULT_SCAN_DIRECTORY
-        if FALLBACK_SCAN_DIRECTORY.exists():
-            return FALLBACK_SCAN_DIRECTORY
         return Path.home()
-
-    @staticmethod
-    def _resolve_distance_mask_path(source_path: Path) -> Path | None:
-        match = _SCAN_STEM_RE.match(source_path.stem)
-        if match is None:
-            return None
-
-        db_stem = match.group("db")
-        experiment_id = match.group("exp")
-        if match.group("snip") is not None:
-            return DEFAULT_DISTANCE_MASK_DIRECTORY / db_stem / experiment_id / f"{source_path.stem}_distance_mask.npy"
-        return DEFAULT_DISTANCE_MASK_DIRECTORY / db_stem / f"{source_path.stem}_distance_mask.npy"
-
-    def _preload_distance_mask_seeds(self, source_path: Path) -> tuple[int, Path] | None:
-        mask_path = self._resolve_distance_mask_path(source_path)
-        if mask_path is None or not mask_path.exists():
-            return None
-
-        mask = np.load(str(mask_path))
-        xs, ys = sample_seed_points_from_annotation(mask, max_seed_count=PRELOADED_MASK_SEED_COUNT, sentinel=NAN_SENTINEL)
-        if len(xs) < 2:
-            return None
-
-        self._viewer.set_seeds(list(zip(xs.tolist(), ys.tolist())))
-        return len(xs), mask_path
 
     def _load_directory(self, directory: str):
         folder = Path(directory)
@@ -277,15 +239,6 @@ class MainWindow(QMainWindow):
         self._lbl_nan_info.setText("")
 
         self._viewer.set_image(self._current_data)
-        preload_result = self._preload_distance_mask_seeds(path)
-        if preload_result is not None:
-            seed_count, mask_path = preload_result
-            self._status.showMessage(
-                f"Loaded {path.name}  —  shape {self._current_data.shape}  |  "
-                f"Preloaded {seed_count} spline seeds from {mask_path.name}. Fine-tune or adjust by right-clicking seeds."
-            )
-            return
-
         self._status.showMessage(
             f"Loaded {path.name}  —  shape {self._current_data.shape}  |  "
             "Click on the image to place seed points. Spline updates automatically."

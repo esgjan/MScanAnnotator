@@ -9,13 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from oct_annotator.engine import (
-    fit_spline,
-    refine_boundary,
-    render_annotation_png,
-    sample_seed_points_from_annotation,
-    to_preview_uint8,
-)
+from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png, to_preview_uint8
 
 
 # ---------------------------------------------------------------------------
@@ -232,30 +226,3 @@ class TestAnnotationLength:
         for width in [512, 1000, 256]:
             result = fit_spline(xs, ys, width=width)
             assert result.shape == (width,), f"Expected length {width}, got {result.shape}"
-
-
-class TestSampleSeedPointsFromAnnotation:
-    def test_samples_across_full_valid_span(self):
-        annotation = np.arange(100, 120, dtype=np.uint16).reshape(-1, 1)
-        xs, ys = sample_seed_points_from_annotation(annotation, max_seed_count=5)
-
-        assert xs.shape == (5,)
-        assert ys.shape == (5,)
-        assert xs[0] == 0
-        assert xs[-1] == 19
-        assert ys[0] == 100
-        assert ys[-1] == 119
-
-    def test_ignores_sentinel_columns(self):
-        annotation = np.array([65535, 12, 13, 14, 65535, 16, 17], dtype=np.uint16).reshape(-1, 1)
-        xs, ys = sample_seed_points_from_annotation(annotation, max_seed_count=4)
-
-        np.testing.assert_array_equal(xs, np.array([1.0, 2.0, 5.0, 6.0]))
-        np.testing.assert_array_equal(ys, np.array([12.0, 13.0, 16.0, 17.0]))
-
-    def test_returns_empty_for_all_sentinel(self):
-        annotation = np.full((32, 1), 65535, dtype=np.uint16)
-        xs, ys = sample_seed_points_from_annotation(annotation, max_seed_count=8)
-
-        assert xs.size == 0
-        assert ys.size == 0

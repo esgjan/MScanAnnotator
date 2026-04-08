@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 from scipy.interpolate import make_interp_spline
 
 
-_OCT_CLIP_MIN = 0.0
+_OCT_CLIP_MIN = 1.0
 _OCT_CLIP_MAX = 4.0
 
 
@@ -52,39 +52,6 @@ def fit_spline(
 
     y_indices = np.round(y_eval).astype(np.int64)
     return y_indices
-
-
-def sample_seed_points_from_annotation(
-    annotation: NDArray[np.uint16],
-    max_seed_count: int = 16,
-    sentinel: np.uint16 = np.uint16(65535),
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Sample sparse seed points from a dense per-column annotation.
-
-    Parameters
-    ----------
-    annotation : uint16 array with shape (columns,) or (columns, 1).
-    max_seed_count : maximum number of seed points to return.
-    sentinel : columns with this value are ignored.
-
-    Returns
-    -------
-    xs, ys : float64 arrays containing sampled seed coordinates.
-    """
-    flat = np.asarray(annotation, dtype=np.uint16).reshape(-1)
-    valid_xs = np.flatnonzero(flat != sentinel)
-    if valid_xs.size == 0:
-        empty = np.empty(0, dtype=np.float64)
-        return empty, empty
-
-    valid_ys = flat[valid_xs].astype(np.float64)
-    sample_count = max(2, min(int(max_seed_count), int(valid_xs.size)))
-    sample_positions = np.linspace(0, valid_xs.size - 1, num=sample_count)
-    sample_indices = np.unique(np.round(sample_positions).astype(np.int64))
-
-    xs = valid_xs[sample_indices].astype(np.float64)
-    ys = valid_ys[sample_indices]
-    return xs, ys
 
 
 _REFINE_DELTA = 5  # fixed half-window for gradient search
@@ -160,22 +127,18 @@ def render_annotation_png(
     annotation   : 1-D uint16 array (cols,); sentinel columns are skipped.
     nan_mask     : bool array (cols,); True = excluded column.
     out_path     : file path for the output PNG.
-    line_color   : RGB tuple for the boundary line (will be converted to BGR for BGRA).
+    line_color   : RGB tuple for the boundary line.
     line_thickness : pixel width of the boundary line.
     """
-    import cv2
     rows, cols = m_scan.shape
 
-    # Use the same clip+normalize pipeline as DB analyzer, npy2png, and UI preview.
+    # Use the same clip+normalize pipeline as DB analyzer and UI preview.
     gray = to_preview_uint8(m_scan)
-    # Convert to BGRA to match npy2png.py exactly
-    bgra = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGRA)
+    rgb = np.stack([gray, gray, gray], axis=-1)  # (rows, cols, 3)
 
     # Draw the boundary line (skip NaN columns)
-    # Convert RGB line_color to BGR format for cv2
     ann = annotation.reshape(-1)
     r, g, b = line_color
-    bgr = (b, g, r)  # OpenCV uses BGR instead of RGB
     half = line_thickness // 2
     for x in range(cols):
         if nan_mask[x] or ann[x] == _NAN_SENTINEL:
@@ -183,9 +146,16 @@ def render_annotation_png(
         y_center = int(ann[x])
         y_lo = max(0, y_center - half)
         y_hi = min(rows, y_center + half + 1)
-        bgra[y_lo:y_hi, x, :3] = bgr  # Draw on BGR channels, keep A=255
+        rgb[y_lo:y_hi, x] = [r, g, b]
 
-    # Write PNG using cv2 to ensure BGRA format matches npy2png.py
-    ok = cv2.imwrite(out_path, bgra)
-    if not ok:
-        raise RuntimeError(f"Failed to write PNG: {out_path}")
+    # Write PNG using PyQt6's QImage (avoids extra dependencies)
+    from PyQt6.QtGui import QImage
+    img_data = np.ascontiguousarray(rgb)
+    qimage = QImage(
+        img_data.data,
+        cols,
+        rows,
+        cols * 3,
+        QImage.Format.Format_RGB888,
+    )
+    qimage.save(out_path, "PNG")

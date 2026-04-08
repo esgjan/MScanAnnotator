@@ -52,7 +52,6 @@ oct_annotator/
 | PyQt6 | ≥ 6.5 |
 | NumPy | ≥ 1.24 |
 | SciPy | ≥ 1.10 |
-| OpenCV (`opencv-python`) | ≥ 4.6 |
 
 ### Installation
 
