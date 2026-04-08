@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "MScanAnnotator (venv)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/oct_annotator/main.py",
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe"
+        }
+    ]
+}

@@ -51,9 +51,10 @@ oct_annotator/
 | Dependency | Version |
 |---|---|
 | Python | ≥ 3.9 |
-| PyQt6 | ≥ 6.5 |
+| PyQt6 | ≥ 6.5, < 6.11 |
 | NumPy | ≥ 1.24 |
 | SciPy | ≥ 1.10 |
+| opencv-python | ≥ 4.8 |
 
 ### Installation
 

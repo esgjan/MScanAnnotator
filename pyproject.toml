@@ -8,9 +8,10 @@ version = "0.1.0"
 description = "M-Scan OCT boundary annotator with spline interpolation and gradient refinement."
 requires-python = ">=3.9"
 dependencies = [
-    "PyQt6>=6.5",
+    "PyQt6>=6.5,<6.11",
     "numpy>=1.24",
     "scipy>=1.10",
+    "opencv-python>=4.8",
 ]
 
 [project.scripts]
