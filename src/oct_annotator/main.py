@@ -37,7 +37,7 @@ from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_
 
 # Sentinel value written into uint16 annotations for NaN / excluded columns
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
-DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy")
+DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy_raw_snippets")
 
 
 class MainWindow(QMainWindow):

@@ -87,6 +87,72 @@ class TestRefineBoundary:
         refined = refine_boundary(m_scan, indices)
         assert refined.shape == (256,)
 
+    def test_prefers_first_layer_when_multiple_peaks_exist(self):
+        """Prefer the earliest strong edge when two nearby peaks are similar."""
+        rows, cols = 120, 80
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+
+        # Two nearby step edges: first at row 40, second at row 46.
+        # The second is slightly stronger, but the first should still be picked
+        # by the first-strong-edge policy.
+        m_scan[40:, :] += 1.0
+        m_scan[46:, :] += 1.02
+
+        initial = np.full(cols, 45, dtype=np.int64)
+        refined = refine_boundary(m_scan, initial)
+
+        # np.gradient places edge response one index above the step.
+        np.testing.assert_array_equal(refined, 39)
+
+    def test_smooths_single_column_outlier(self):
+        """An isolated stronger deeper edge should not pull one column down."""
+        rows, cols = 120, 81
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+
+        # Consistent first retinal layer.
+        m_scan[40:, :] += 1.0
+        # Add a deeper edge only in one column.
+        m_scan[48:, cols // 2] += 2.0
+
+        initial = np.full(cols, 44, dtype=np.int64)
+        refined = refine_boundary(m_scan, initial)
+
+        # The refined curve should stay on the top layer even at the outlier column.
+        assert int(refined[cols // 2]) == 39
+        assert np.max(np.abs(refined.astype(np.int32) - 39)) <= 1
+
+    def test_ignores_early_edge_that_stays_almost_black(self):
+        """Prefer the first edge whose post-edge region is visibly bright."""
+        rows, cols = 120, 80
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+
+        # Early weak layer: edge exists, but region remains almost black.
+        m_scan[34:, :] += 0.05
+        # Actual top retinal layer becomes clearly visible later.
+        m_scan[40:, :] += 0.95
+
+        initial = np.full(cols, 38, dtype=np.int64)
+        refined = refine_boundary(m_scan, initial)
+
+        np.testing.assert_array_equal(refined, 39)
+
+    def test_keeps_spline_when_top_layer_fades_to_black_background(self):
+        """At scan ends, keep the spline if no plausible bright top layer remains."""
+        rows, cols = 120, 80
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+
+        # Left side contains a visible top layer.
+        m_scan[40:, :40] += 1.0
+        # Right side fades to black background with only a deeper edge present.
+        m_scan[65:, 40:] += 1.0
+
+        initial = np.full(cols, 40, dtype=np.int64)
+        refined = refine_boundary(m_scan, initial)
+
+        # Left half should detect the top layer; right half should stay near spline.
+        assert np.all(refined[:35] == 39)
+        assert np.max(np.abs(refined[45:].astype(np.int32) - 40)) <= 1
+
 
 # ---------------------------------------------------------------------------
 # Integration test – mock file round-trip

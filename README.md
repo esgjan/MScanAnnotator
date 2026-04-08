@@ -7,9 +7,10 @@ A lightweight, callable desktop tool for annotating retinal layer boundaries in 
 ## Features
 
 - **PyQt6 GUI** — native High-DPI rendering on Windows/macOS/Linux
-- **Exact preview/export parity** — on-screen preview and saved PNG use the same OCT preprocessing pipeline as `dataloader2/npy2png.py`
 - **Automatic spline updates** — a smooth interpolating spline is redrawn after every seed edit; no separate fit step required
-- **Gradient fine-tuning** — each A-scan column snaps to the local intensity-gradient peak within a configurable ±δ window
+- **Spline-guided fine-tuning** — refinement favors the first strong dark-to-bright edge near the spline instead of blindly taking the strongest deeper peak
+- **Smoother retinal boundary detection** — gradient maps and final boundaries are smoothed across neighboring A-scans to suppress single-column outliers and jitter
+- **Black-background aware refinement** — if the top layer fades out near scan ends, fine-tuning keeps the spline instead of snapping down to a deeper layer
 - **Experiment-friendly output layout** — saved annotations and overlay PNGs go to an `annotated/` subfolder, while flagged scans go to `2hard2label/`
 - **Fast review workflow** — saving or flagging a scan automatically advances to the next source file and can continue into the next sibling experiment folder
 - **Clean file list** — only source `*.npy` scans appear in the dropdown; generated `*_annotations.npy` files are excluded
@@ -53,7 +54,6 @@ oct_annotator/
 | PyQt6 | ≥ 6.5 |
 | NumPy | ≥ 1.24 |
 | SciPy | ≥ 1.10 |
-| OpenCV (`opencv-python`) | ≥ 4.6 |
 
 ### Installation
 
@@ -93,47 +93,14 @@ oct-annotate                      # opens a folder-picker dialog
 oct-annotate "C:/path/to/scans"   # opens directly with the given folder
 ```
 
-On Windows, the included launcher scripts start the app with the default scan directory at `D:\iiOCT_data\npy`.
-
-### Windows batch launcher
-
-`start_oct_annotate.bat` is a simple Windows launcher for users who want to start the app by double-clicking a file instead of opening a terminal.
-
-Before another user runs it, update these lines inside the batch file:
-
-- `PROJECT_DIR=...` should point to that user's local `MScanAnnotator` folder
-- `.venv\Scripts\python.exe` must exist inside that project folder
-- `src\oct_annotator\main.py` must exist inside that project folder
-- `DEFAULT_SCAN_DIR=...` should point to the default scan folder that should open at startup
-
-Example:
-
-```bat
-@echo off
-set "PROJECT_DIR=C:\Users\Alice\git\MScanAnnotator"
-set "VENV_PYTHON=%PROJECT_DIR%\.venv\Scripts\python.exe"
-set "APP_ENTRY=%PROJECT_DIR%\src\oct_annotator\main.py"
-cd /d "%PROJECT_DIR%"
-"%VENV_PYTHON%" "%APP_ENTRY%" "D:\iiOCT_data\npy"
-```
-
-For the shared project setup, this is the recommended Windows entry point. Users only need the project folder, the project `.venv`, and the batch file above.
-
-If a user does not want to edit the batch file, they can skip it and run the app directly from a terminal instead:
-
-```bash
-oct-annotate
-oct-annotate "D:/iiOCT_data/npy"
-```
-
 ### Annotation workflow
 
 1. **Open folder** — select a directory containing source `*.npy` M-scan files  
-   *(expected shape: `rows × columns`, float32/float64; raw OCT values are supported)*
+   *(expected shape: `rows × columns`, float64, values in [0, 1])*
 2. **Review the file list** — the dropdown shows only source scans and hides generated `*_annotations.npy` files
 3. **Place seeds** — left-click on the image to mark boundary control points (red dots); the spline updates automatically once at least two seeds exist
 4. **Edit seeds quickly** — right-click removes the most recent seed, or right-click directly on an existing seed to remove that exact point
-5. **Fine-tune** — press `A` or click **Fine-tune** to snap each A-scan point to the nearest gradient peak (blue curve)
+5. **Fine-tune** — press `A` or click **Fine-tune** to refine the spline into a smooth boundary that follows the earliest plausible top-layer edge near the spline (blue curve)
 6. **Mark excluded regions** — add one or more NaN windows for columns that should export as the NaN sentinel value `65535`
 7. **Save** — press `D` or click **Save** to write:
    - `annotated/<source_stem>_annotations.npy`
@@ -142,6 +109,15 @@ oct-annotate "D:/iiOCT_data/npy"
 8. **Flag difficult scans** — press `F` or click **Too Hard** to copy the original scan into `2hard2label/`, generate a PNG preview, and continue to the next file
 
 If the current folder is exhausted, the app attempts to open the next sibling experiment folder that contains source scans.
+
+### Fine-tuning behavior
+
+- Fine-tuning searches in a local window around the current spline, so refinement stays tied to the user-guided boundary instead of drifting across the scan.
+- Only positive vertical gradients are considered, which biases the result toward the dark-to-bright transition expected at the top retinal layer.
+- Candidates must also have visible post-edge brightness, which helps reject faint early edges that remain almost black.
+- When multiple nearby candidates are plausible, the algorithm prefers the earliest sufficiently strong one, which improves first-layer detection.
+- The final boundary is median-filtered and then smoothed across columns to reduce isolated jumps while preserving the overall layer shape.
+- If no plausible bright-tissue candidate exists in a column, the spline position is kept there; this is important when the retinal surface disappears into black background at the scan edges.
 
 ### Interaction details
 
@@ -156,40 +132,6 @@ If the current folder is exhausted, the app attempts to open the next sibling ex
 - **Scroll wheel** — zoom in/out centred on the cursor
 - The image auto-fits the window on load and resize
 - NaN windows can be repositioned freely, including all the way to the left edge
-
----
-
-## Rendering Pipeline (Preview = PNG)
-
-The application now guarantees that the image shown in the viewer and the exported PNG overlay are generated from exactly the same preprocessing pipeline used by `dataloader2/npy2png.py`.
-
-Pipeline:
-
-1. **Clip** raw values to `[0.0, 4.0]`
-2. **Normalize** per image using min/max after clipping
-3. **Convert** grayscale display image to BGRA
-4. **Scale** to uint8 (`0..255`)
-
-Important notes:
-
-- No additional gamma correction is applied.
-- No separate preview-only contrast curve is applied.
-- The same conversion function is reused for both on-screen preview and `*_annotations.png` export.
-
-This parity makes annotation review more reliable for all users because what you see while labeling is what gets saved.
-
----
-
-## Reusability Notes For Other Users
-
-To reproduce the same behavior on another machine:
-
-1. Install dependencies from `requirements.txt` (or `pip install -e .` to use `pyproject.toml`).
-2. Use Python 3.9+ with the same package major versions listed above.
-3. Keep scan files as 2-D numpy arrays (`rows x columns`).
-4. Launch with `oct-annotate` and annotate from any folder of source scans.
-
-If you also generate reference PNGs with `dataloader2/npy2png.py`, they should match the annotator preview preprocessing step-by-step.
 
 ---
 
@@ -209,7 +151,7 @@ python -m build
 | Class | Tests |
 |---|---|
 | `TestFitSpline` | correct width, integer dtype, linear 2-point case, single-point error, in-range values |
-| `TestRefineBoundary` | edge snapping, output dtype, output shape |
+| `TestRefineBoundary` | edge snapping, first-layer preference, outlier smoothing, dim-edge rejection, black-background fallback, output dtype, output shape |
 | `TestIntegrationSaveLoad` | full annotate→save→reload round-trip, filename convention |
 | `TestPerformance` | refinement < 100 ms on a 1024 × 1000 scan |
 

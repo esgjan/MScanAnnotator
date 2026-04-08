@@ -24,9 +24,10 @@ from oct_annotator.engine import to_preview_uint8
 
 
 SEED_RADIUS = 4
-SEED_COLOR = QColor(255, 50, 50)
-SPLINE_COLOR = QColor(0, 255, 100)
-REFINED_COLOR = QColor(50, 150, 255)
+SEED_HITBOX_RADIUS_PX = 12
+SEED_COLOR = QColor(255, 50, 50, 140)
+SPLINE_COLOR = QColor(0, 255, 100, 110)
+REFINED_COLOR = QColor(255, 40, 40, 235)
 # Palette of (fill, edge) colors cycled across successive NaN windows
 _NAN_PALETTE: list[tuple[QColor, QColor]] = [
     (QColor(220,   0, 255,  55), QColor(220,   0, 255, 210)),  # magenta
@@ -184,7 +185,7 @@ class MScanViewer(QGraphicsView):
     def draw_refined(self, y_indices: NDArray, nan_mask: NDArray[np.bool_] | None = None) -> None:
         """Overlay a refined boundary curve on the image, with gaps for NaN regions."""
         self._remove_item(self._refined_path_item)
-        self._refined_path_item = self._add_curve(y_indices, REFINED_COLOR, 1.5, nan_mask)
+        self._refined_path_item = self._add_curve(y_indices, REFINED_COLOR, 2.5, nan_mask)
 
     def clear_overlays(self) -> None:
         self._remove_item(self._spline_path_item)
@@ -316,10 +317,10 @@ class MScanViewer(QGraphicsView):
             return
 
         if event.button() == Qt.MouseButton.RightButton:
-            item_under = self.itemAt(event.pos())
-            if isinstance(item_under, QGraphicsEllipseItem):
-                if self.remove_seed_item(item_under):
-                    return
+            seed_idx = self._find_seed_index_near_view_pos(float(event.pos().x()), float(event.pos().y()))
+            if seed_idx is not None:
+                self.remove_seed_item(self._seed_items[seed_idx])
+                return
             self.remove_last_seed()
             return
 
@@ -412,6 +413,26 @@ class MScanViewer(QGraphicsView):
         pen.setCosmetic(True)  # constant screen-width regardless of zoom
         item = self._scene.addPath(path, pen)
         return item
+
+    def _find_seed_index_near_view_pos(self, view_x: float, view_y: float) -> int | None:
+        """Return the nearest seed index within the on-screen hitbox, if any."""
+        if not self._seeds:
+            return None
+        best_idx = None
+        best_dist2 = float("inf")
+        for i, (seed_x, seed_y) in enumerate(self._seeds):
+            vp = self.mapFromScene(QPointF(seed_x, seed_y))
+            dx = float(vp.x()) - view_x
+            dy = float(vp.y()) - view_y
+            dist2 = dx * dx + dy * dy
+            if dist2 < best_dist2:
+                best_dist2 = dist2
+                best_idx = i
+        if best_idx is None:
+            return None
+        if best_dist2 <= float(SEED_HITBOX_RADIUS_PX * SEED_HITBOX_RADIUS_PX):
+            return best_idx
+        return None
 
     def _remove_item(self, item):
         if item is not None and item.scene() is not None:

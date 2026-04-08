@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.ndimage import median_filter, uniform_filter1d
 from scipy.interpolate import make_interp_spline
 import cv2
 
 
 _OCT_CLIP_MIN = 0.0
 _OCT_CLIP_MAX = 4.0
+_REFINE_DELTA = 7
+_FIRST_LAYER_RELATIVE_THRESHOLD = 0.85
+_FIRST_LAYER_MIN_BRIGHTNESS = 0.08
+_SPLINE_DISTANCE_DECAY = 0.12
+_SPLINE_PRIOR_RELATIVE_THRESHOLD = 0.45
+_REFINE_GRADIENT_SMOOTHING = 5
+_REFINE_MEDIAN_SIZE = 7
+_REFINE_OUTPUT_SMOOTHING = 9
 
 
 def fit_spline(
@@ -55,18 +64,18 @@ def fit_spline(
     return y_indices
 
 
-_REFINE_DELTA = 5  # fixed half-window for gradient search
-
-
 def refine_boundary(
     m_scan: NDArray,
     spline_indices: NDArray[np.int64],
 ) -> NDArray[np.uint16]:
-    """Snap spline indices to the nearest strong vertical gradient.
+    """Snap spline indices to a strong first-layer vertical gradient.
 
-    Uses a fixed ±5-pixel search window around each spline index to find
-    the local gradient maximum.  This keeps the refinement tight to the
-    spline while still snapping to real tissue boundaries.
+    Uses a fixed local search window around each spline index and computes
+    positive vertical gradients (dark-to-bright transitions). For each column,
+    it selects the earliest strong peak near the spline and then smooths the
+    resulting boundary across neighboring A-scans. This behavior is tuned for
+    the top retinal layer, which is usually the first strong positive edge and
+    should vary smoothly across columns.
 
     Parameters
     ----------
@@ -79,17 +88,56 @@ def refine_boundary(
     """
     rows, cols = m_scan.shape
     delta = _REFINE_DELTA
-    grad = np.abs(np.gradient(m_scan, axis=0))  # vertical gradient
+    disp = normalized_preview_float(m_scan)
 
-    # Vectorised: build a (2*delta, cols) window for all columns at once
+    # First layer is usually a dark-to-bright transition, so keep positive
+    # vertical gradients only to avoid snapping to opposite edges.
+    grad = np.maximum(np.gradient(m_scan.astype(np.float32, copy=False), axis=0), 0.0)
+    grad = uniform_filter1d(grad, size=_REFINE_GRADIENT_SMOOTHING, axis=1, mode="nearest")
+    disp = uniform_filter1d(disp, size=_REFINE_GRADIENT_SMOOTHING, axis=1, mode="nearest")
+
+    # Vectorised: build a (2*delta+1, cols) window for all columns at once
     y_init = np.clip(spline_indices.astype(np.int64), delta, rows - delta - 1)
-    offsets = np.arange(-delta, delta)  # shape (2*delta,)
-    # row indices: (2*delta, cols)
+    offsets = np.arange(-delta, delta + 1)  # shape (2*delta+1,)
+    # row indices: (2*delta+1, cols)
     row_idx = y_init[np.newaxis, :] + offsets[:, np.newaxis]
     col_idx = np.arange(cols)[np.newaxis, :]  # (1, cols)
-    windows = grad[row_idx, col_idx]  # (2*delta, cols)
-    best_offset = np.argmax(windows, axis=0)  # (cols,)
-    refined = y_init + offsets[best_offset]
+    windows = grad[row_idx, col_idx]  # (2*delta+1, cols)
+    post_row_idx = np.clip(row_idx + 1, 0, rows - 1)
+    post_intensity = disp[post_row_idx, col_idx]
+
+    local_max = np.max(windows, axis=0)
+    strong_mask = windows >= (_FIRST_LAYER_RELATIVE_THRESHOLD * local_max[np.newaxis, :])
+    strong_mask &= post_intensity >= _FIRST_LAYER_MIN_BRIGHTNESS
+
+    # Use the spline as a region prior: candidates farther away from the spline
+    # are less likely to belong to the intended top retinal layer.
+    distance_penalty = np.exp(-_SPLINE_DISTANCE_DECAY * np.abs(offsets))[:, np.newaxis]
+    weighted_windows = np.where(strong_mask, windows * distance_penalty, -np.inf)
+
+    # If a column is flat, keep the spline position there.
+    has_signal = local_max > 0
+    raw_refined = y_init.copy()
+
+    candidate_columns = np.any(strong_mask, axis=0) & has_signal
+    if np.any(candidate_columns):
+        candidate_scores = weighted_windows[:, candidate_columns]
+        weighted_max = np.max(candidate_scores, axis=0)
+        earliest_good_mask = candidate_scores >= (
+            _SPLINE_PRIOR_RELATIVE_THRESHOLD * weighted_max[np.newaxis, :]
+        )
+        best_idx = np.argmax(earliest_good_mask, axis=0)
+        raw_refined[candidate_columns] = y_init[candidate_columns] + offsets[best_idx]
+
+    # If no bright-tissue candidate exists near the spline, keep the spline in
+    # that column. This handles scan ends where the top retinal layer fades into
+    # black background instead of forcing a snap to a deeper edge.
+
+    # Smooth the final boundary across A-scans: median removes outliers,
+    # uniform averaging reduces jitter while preserving the overall shape.
+    refined = median_filter(raw_refined, size=_REFINE_MEDIAN_SIZE, mode="nearest")
+    refined = uniform_filter1d(refined.astype(np.float32), size=_REFINE_OUTPUT_SMOOTHING, mode="nearest")
+    refined = np.clip(np.round(refined), 0, rows - 1)
 
     return refined.astype(np.uint16)
 
@@ -107,15 +155,19 @@ def to_preview_uint8(m_scan: NDArray) -> NDArray[np.uint8]:
     return bgra[:, :, 0]
 
 
-def db_equivalent_bgra_from_raw(raw_img: NDArray) -> NDArray[np.uint8]:
-    """Exact clip/normalize/BGRA pipeline used by dataloader2/npy2png.py."""
+def normalized_preview_float(raw_img: NDArray) -> NDArray[np.float32]:
+    """Return the clip+normalize display image as float32 in [0, 1]."""
     img = np.clip(raw_img.astype(np.float32, copy=False), _OCT_CLIP_MIN, _OCT_CLIP_MAX)
     vmin = float(img.min())
     vmax = float(img.max())
     if vmax > vmin:
-        disp = (img - vmin) / (vmax - vmin)
-    else:
-        disp = np.zeros_like(img, dtype=np.float32)
+        return (img - vmin) / (vmax - vmin)
+    return np.zeros_like(img, dtype=np.float32)
+
+
+def db_equivalent_bgra_from_raw(raw_img: NDArray) -> NDArray[np.uint8]:
+    """Exact clip/normalize/BGRA pipeline used by dataloader2/npy2png.py."""
+    disp = normalized_preview_float(raw_img)
     bgra = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGRA)
     return (bgra * 255.0).astype(np.uint8)
 
