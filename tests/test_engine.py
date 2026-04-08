@@ -207,8 +207,8 @@ class TestPreviewConversion:
 
         assert out.dtype == np.uint8
         assert int(out[0, 0]) == 0
-        assert int(out[0, 1]) == 0
-        assert int(out[0, 2]) == 127
+        assert int(out[0, 1]) == 63
+        assert int(out[0, 2]) == 159
         assert int(out[0, 3]) == 255
         assert int(out[0, 4]) == 255
 

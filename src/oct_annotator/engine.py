@@ -5,9 +5,10 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 from scipy.interpolate import make_interp_spline
+import cv2
 
 
-_OCT_CLIP_MIN = 1.0
+_OCT_CLIP_MIN = 0.0
 _OCT_CLIP_MAX = 4.0
 
 
@@ -101,14 +102,22 @@ _NAN_SENTINEL = np.uint16(65535)
 
 
 def to_preview_uint8(m_scan: NDArray) -> NDArray[np.uint8]:
-    """Convert raw OCT image to uint8 using DB-analyzer clip+normalize."""
-    img = np.clip(m_scan.astype(np.float64, copy=False), _OCT_CLIP_MIN, _OCT_CLIP_MAX)
-    vmin, vmax = float(img.min()), float(img.max())
+    """Convert raw OCT image to uint8 using the same pipeline as npy2png.py."""
+    bgra = db_equivalent_bgra_from_raw(m_scan)
+    return bgra[:, :, 0]
+
+
+def db_equivalent_bgra_from_raw(raw_img: NDArray) -> NDArray[np.uint8]:
+    """Exact clip/normalize/BGRA pipeline used by dataloader2/npy2png.py."""
+    img = np.clip(raw_img.astype(np.float32, copy=False), _OCT_CLIP_MIN, _OCT_CLIP_MAX)
+    vmin = float(img.min())
+    vmax = float(img.max())
     if vmax > vmin:
         disp = (img - vmin) / (vmax - vmin)
     else:
-        disp = np.zeros_like(img)
-    return (disp * 255.0).astype(np.uint8)
+        disp = np.zeros_like(img, dtype=np.float32)
+    bgra = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGRA)
+    return (bgra * 255.0).astype(np.uint8)
 
 
 def render_annotation_png(
@@ -132,13 +141,13 @@ def render_annotation_png(
     """
     rows, cols = m_scan.shape
 
-    # Use the same clip+normalize pipeline as DB analyzer and UI preview.
-    gray = to_preview_uint8(m_scan)
-    rgb = np.stack([gray, gray, gray], axis=-1)  # (rows, cols, 3)
+    # Use the exact same clip+normalize+BGR conversion as npy2png.py.
+    bgra = db_equivalent_bgra_from_raw(m_scan)
 
     # Draw the boundary line (skip NaN columns)
     ann = annotation.reshape(-1)
     r, g, b = line_color
+    bgr = (b, g, r)
     half = line_thickness // 2
     for x in range(cols):
         if nan_mask[x] or ann[x] == _NAN_SENTINEL:
@@ -146,16 +155,8 @@ def render_annotation_png(
         y_center = int(ann[x])
         y_lo = max(0, y_center - half)
         y_hi = min(rows, y_center + half + 1)
-        rgb[y_lo:y_hi, x] = [r, g, b]
+        bgra[y_lo:y_hi, x, :3] = bgr
 
-    # Write PNG using PyQt6's QImage (avoids extra dependencies)
-    from PyQt6.QtGui import QImage
-    img_data = np.ascontiguousarray(rgb)
-    qimage = QImage(
-        img_data.data,
-        cols,
-        rows,
-        cols * 3,
-        QImage.Format.Format_RGB888,
-    )
-    qimage.save(out_path, "PNG")
+    ok = cv2.imwrite(out_path, bgra)
+    if not ok:
+        raise RuntimeError(f"Failed to write PNG: {out_path}")

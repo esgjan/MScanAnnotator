@@ -7,6 +7,7 @@ A lightweight, callable desktop tool for annotating retinal layer boundaries in 
 ## Features
 
 - **PyQt6 GUI** — native High-DPI rendering on Windows/macOS/Linux
+- **Exact preview/export parity** — on-screen preview and saved PNG use the same OCT preprocessing pipeline as `dataloader2/npy2png.py`
 - **Automatic spline updates** — a smooth interpolating spline is redrawn after every seed edit; no separate fit step required
 - **Gradient fine-tuning** — each A-scan column snaps to the local intensity-gradient peak within a configurable ±δ window
 - **Experiment-friendly output layout** — saved annotations and overlay PNGs go to an `annotated/` subfolder, while flagged scans go to `2hard2label/`
@@ -52,6 +53,7 @@ oct_annotator/
 | PyQt6 | ≥ 6.5 |
 | NumPy | ≥ 1.24 |
 | SciPy | ≥ 1.10 |
+| OpenCV (`opencv-python`) | ≥ 4.6 |
 
 ### Installation
 
@@ -127,7 +129,7 @@ oct-annotate "D:/iiOCT_data/npy"
 ### Annotation workflow
 
 1. **Open folder** — select a directory containing source `*.npy` M-scan files  
-   *(expected shape: `rows × columns`, float64, values in [0, 1])*
+   *(expected shape: `rows × columns`, float32/float64; raw OCT values are supported)*
 2. **Review the file list** — the dropdown shows only source scans and hides generated `*_annotations.npy` files
 3. **Place seeds** — left-click on the image to mark boundary control points (red dots); the spline updates automatically once at least two seeds exist
 4. **Edit seeds quickly** — right-click removes the most recent seed, or right-click directly on an existing seed to remove that exact point
@@ -154,6 +156,40 @@ If the current folder is exhausted, the app attempts to open the next sibling ex
 - **Scroll wheel** — zoom in/out centred on the cursor
 - The image auto-fits the window on load and resize
 - NaN windows can be repositioned freely, including all the way to the left edge
+
+---
+
+## Rendering Pipeline (Preview = PNG)
+
+The application now guarantees that the image shown in the viewer and the exported PNG overlay are generated from exactly the same preprocessing pipeline used by `dataloader2/npy2png.py`.
+
+Pipeline:
+
+1. **Clip** raw values to `[0.0, 4.0]`
+2. **Normalize** per image using min/max after clipping
+3. **Convert** grayscale display image to BGRA
+4. **Scale** to uint8 (`0..255`)
+
+Important notes:
+
+- No additional gamma correction is applied.
+- No separate preview-only contrast curve is applied.
+- The same conversion function is reused for both on-screen preview and `*_annotations.png` export.
+
+This parity makes annotation review more reliable for all users because what you see while labeling is what gets saved.
+
+---
+
+## Reusability Notes For Other Users
+
+To reproduce the same behavior on another machine:
+
+1. Install dependencies from `requirements.txt` (or `pip install -e .` to use `pyproject.toml`).
+2. Use Python 3.9+ with the same package major versions listed above.
+3. Keep scan files as 2-D numpy arrays (`rows x columns`).
+4. Launch with `oct-annotate` and annotate from any folder of source scans.
+
+If you also generate reference PNGs with `dataloader2/npy2png.py`, they should match the annotator preview preprocessing step-by-step.
 
 ---
 
