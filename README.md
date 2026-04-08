@@ -58,6 +58,14 @@ oct_annotator/
 
 ### Installation
 
+0. **Verify Python is available**:
+
+   ```bash
+   python --version
+   ```
+
+   If this command fails on Windows, install Python 3.10+ from python.org and make sure the installer option to add Python to PATH is enabled.
+
 1. **Create a virtual environment using Python 3.9+** (Python 3.12 recommended):
 
    ```bash
@@ -68,12 +76,13 @@ oct_annotator/
    source .venv/bin/activate
    ```
 
-   > On machines where access to PyPI requires bypassing a corporate SSL proxy, add  
-   > `--trusted-host pypi.org --trusted-host files.pythonhosted.org` to every `pip` call.
+   > If your network intercepts TLS/SSL traffic and pip fails with certificate errors, use your organization's Python package mirror, or as a last resort add  
+   > `--trusted-host pypi.org --trusted-host files.pythonhosted.org` to pip commands.
 
 2. **Install dependencies**:
 
    ```bash
+   python -m pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
@@ -93,6 +102,15 @@ oct_annotator/
 oct-annotate                      # opens a folder-picker dialog
 oct-annotate "C:/path/to/scans"   # opens directly with the given folder
 ```
+
+Alternative launch options:
+
+```bash
+# Run as module from the project root
+python -m oct_annotator.main "C:/path/to/scans"
+```
+
+On Windows, you can also double-click `start_oct_annotate.bat` from the project root.
 
 ### Annotation workflow
 
@@ -147,6 +165,37 @@ pip install build
 python -m build
 ```
 
+---
+
+## Troubleshooting
+
+### `ModuleNotFoundError: No module named 'PyQt6'`
+
+- Confirm your virtual environment is active.
+- Reinstall project dependencies:
+
+```bash
+pip install -r requirements.txt
+pip install -e .
+```
+
+### `ImportError: DLL load failed while importing QtCore` (Windows)
+
+- Use the pinned PyQt6 range from this project (`PyQt6>=6.5,<6.11`).
+- Reinstall to ensure matching wheels are present:
+
+```bash
+pip install --force-reinstall "PyQt6>=6.5,<6.11"
+```
+
+### `ModuleNotFoundError: No module named 'cv2'`
+
+- Install OpenCV in the same environment that runs the app:
+
+```bash
+pip install opencv-python
+```
+
 ### Test coverage
 
 | Class | Tests |
@@ -174,4 +223,4 @@ The included `.azure-pipelines.yml` triggers on pushes to `main` and:
 1. Branch from `main` using the convention `feature/<short-description>` or `fix/<short-description>`
 2. Add or update tests for any logic changes in `engine.py`
 3. Ensure `pytest tests/ -v` passes locally before opening a pull request
-4. Open a PR against `main` in Azure DevOps — at least one reviewer approval is required before merge
+4. Open a pull request against `main` and request at least one review before merge
