@@ -419,28 +419,27 @@ class MainWindow(QMainWindow):
         if current_idx < 0 or current_idx >= len(self._npy_files):
             return
         src_path = self._npy_files[current_idx]
-        dest_dir = self._too_hard_output_dir(src_path)
-        dest_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy original NPY into the experiment-local 2hard2label folder.
-        dest_path = dest_dir / src_path.name
-        shutil.copy2(str(src_path), str(dest_path))
-
-        # Export an all-NaN annotation so this sample is marked explicitly as "too hard".
+        # Create all-NaN annotation for this OCT without copying to 2hard2label folder.
         if self._current_data is not None:
             cols = self._current_data.shape[1]
             blank_ann = np.full(cols, NAN_SENTINEL, dtype=np.uint16)
-            out_ann_npy = dest_dir / (src_path.stem + "_annotations.npy")
+            
+            # Save to regular annotated folder (not 2hard2label)
+            out_dir = self._annotation_output_dir(src_path)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            
+            out_ann_npy = out_dir / (src_path.stem + "_annotations.npy")
             np.save(str(out_ann_npy), blank_ann.reshape(-1, 1))
 
             nan_mask = np.zeros(cols, dtype=np.bool_)
-            out_png = dest_dir / (src_path.stem + "_annotations.png")
+            out_png = out_dir / (src_path.stem + "_annotations.png")
             render_annotation_png(self._current_data, blank_ann, nan_mask, str(out_png))
             self._status.showMessage(
-                f"Flagged → 2hard2label/{src_path.name} + {out_ann_npy.name} + {out_png.name}  – skipping to next file."
+                f"Marked as too hard – all boundaries set to NaN. Saved to annotated/  – skipping to next file."
             )
         else:
-            self._status.showMessage(f"Flagged → 2hard2label/{src_path.name}  – skipping to next file.")
+            self._status.showMessage("No data loaded – cannot mark as too hard.")
 
         self._load_next_file(current_idx)
 
