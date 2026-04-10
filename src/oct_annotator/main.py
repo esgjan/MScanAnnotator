@@ -11,6 +11,7 @@ from typing import List
 import numpy as np
 from numpy.typing import NDArray
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -39,6 +40,13 @@ from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
 DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy_raw_snippets")
 
+# class_id -> (name, UI color, PNG RGB color, label-mask value)
+_CLASS_STYLE: dict[int, tuple[str, QColor, tuple[int, int, int], float]] = {
+    1: ("Class 1", QColor(0, 190, 90), (0, 190, 90), 1.0),
+    2: ("Class 2", QColor(230, 190, 0), (230, 190, 0), 2.0),
+    3: ("Class 3", QColor(210, 40, 40), (210, 40, 40), float("nan")),
+}
+
 
 class MainWindow(QMainWindow):
     def __init__(self, directory: str | None = None):
@@ -51,6 +59,7 @@ class MainWindow(QMainWindow):
         self._current_data: NDArray | None = None
         self._spline_indices: NDArray | None = None
         self._refined_indices: NDArray | None = None
+        self._active_class: int = 1
 
         self._build_ui()
         self._connect_signals()
@@ -116,6 +125,20 @@ class MainWindow(QMainWindow):
         self._btn_clear = QPushButton("Clear Seeds")
         toolbar.addWidget(self._btn_clear)
 
+        self._lbl_class = QLabel("")
+        self._lbl_class.setMinimumWidth(160)
+        toolbar.addWidget(self._lbl_class)
+
+        self._shortcut_class_1 = QShortcut(QKeySequence("1"), self)
+        self._shortcut_class_1.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_class_1.activated.connect(lambda: self._set_active_class(1))
+        self._shortcut_class_2 = QShortcut(QKeySequence("2"), self)
+        self._shortcut_class_2.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_class_2.activated.connect(lambda: self._set_active_class(2))
+        self._shortcut_class_3 = QShortcut(QKeySequence("3"), self)
+        self._shortcut_class_3.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_class_3.activated.connect(lambda: self._set_active_class(3))
+
         # Second toolbar row — zoom & NaN windows
         toolbar2 = QHBoxLayout()
         root.addLayout(toolbar2)
@@ -153,6 +176,7 @@ class MainWindow(QMainWindow):
             "Open a folder containing .npy M-scan files to begin.  "
             "Right-click removes the last seed · Middle-click resets zoom."
         )
+        self._apply_active_class_style()
 
     # ---- Signals -------------------------------------------------------
 
@@ -239,6 +263,7 @@ class MainWindow(QMainWindow):
         self._lbl_nan_info.setText("")
 
         self._viewer.set_image(self._current_data)
+        self._apply_active_class_style()
         self._status.showMessage(
             f"Loaded {path.name}  —  shape {self._current_data.shape}  |  "
             "Click on the image to place seed points. Spline updates automatically."
@@ -270,7 +295,8 @@ class MainWindow(QMainWindow):
             self._status.showMessage(f"Spline update skipped: {exc}")
             return
         nan_mask = self._viewer.get_nan_column_mask(width)
-        self._viewer.draw_spline(self._spline_indices, nan_mask)
+        class_map = self._build_class_map(width)
+        self._viewer.draw_spline_classified(self._spline_indices, class_map, nan_mask)
         self._viewer.clear_refined()
         self._btn_refine.setEnabled(True)
         self._btn_save.setEnabled(True)
@@ -284,8 +310,10 @@ class MainWindow(QMainWindow):
         self._refined_indices = refine_boundary(
             self._current_data, self._spline_indices
         )
-        nan_mask = self._viewer.get_nan_column_mask(self._viewer.image_width)
-        self._viewer.draw_refined(self._refined_indices, nan_mask)
+        width = self._viewer.image_width
+        nan_mask = self._viewer.get_nan_column_mask(width)
+        class_map = self._build_class_map(width)
+        self._viewer.draw_refined_classified(self._refined_indices, class_map, nan_mask)
         self._btn_save.setEnabled(True)
         self._btn_reset_refine.setEnabled(True)
         self._status.showMessage("Boundary refined via gradient snap. Press Save to export.")
@@ -310,6 +338,7 @@ class MainWindow(QMainWindow):
         src_path = self._npy_files[current_idx]
         m_scan = self._current_data
         rows, cols = m_scan.shape
+        class_map = self._build_class_map(cols)
 
         # Ensure annotation length matches the number of A-scans (columns)
         ann = indices.astype(np.uint16).reshape(-1)
@@ -319,26 +348,50 @@ class MainWindow(QMainWindow):
             ann_resized[:n] = ann[:n]
             ann = ann_resized
 
-        # Apply NaN-window sentinel
+        # Apply NaN sentinel to excluded regions:
+        # - NaN windows
+        # - class-3 regions (stored as NaN-equivalent in annotation output)
         nan_mask = self._viewer.get_nan_column_mask(cols)
+        class3_mask = class_map == 3
+        ann[class3_mask] = NAN_SENTINEL
         ann[nan_mask] = NAN_SENTINEL
         to_save = ann.reshape(-1, 1)
 
-        # Save .npy annotation
+        # Save boundary .npy annotation
         out_dir = self._annotation_output_dir(src_path)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         out_npy = out_dir / (src_path.stem + "_annotations.npy")
         np.save(str(out_npy), to_save)
 
-        # Save .png visual overlay
+        # Save class label mask .npy with per-region values from seed classes.
+        label_mask = np.empty(cols, dtype=np.float32)
+        label_mask[class_map == 1] = 1.0
+        label_mask[class_map == 2] = 2.0
+        label_mask[class_map == 3] = np.nan
+        label_mask[nan_mask] = np.nan
+        out_label_npy = out_dir / (src_path.stem + "_label_mask.npy")
+        np.save(str(out_label_npy), label_mask.reshape(-1, 1))
+
+        # Save .png visual overlay with class colors per seeded region.
         out_png = out_dir / (src_path.stem + "_annotations.png")
-        render_annotation_png(m_scan, ann, nan_mask, str(out_png))
+        png_class_colors = {
+            class_id: rgb
+            for class_id, (_, _, rgb, _) in _CLASS_STYLE.items()
+        }
+        render_annotation_png(
+            m_scan,
+            ann,
+            nan_mask,
+            str(out_png),
+            class_by_column=class_map,
+            class_colors=png_class_colors,
+        )
 
         n_nan = int(nan_mask.sum())
         nan_note = f"  ({n_nan} cols excluded)" if n_nan else ""
         self._status.showMessage(
-            f"Saved \u2192 {out_dir.name}/{out_npy.name} + {out_png.name}  "
+            f"Saved \u2192 {out_dir.name}/{out_npy.name} + {out_label_npy.name} + {out_png.name}  "
             f"(shape {to_save.shape}){nan_note}"
         )
 
@@ -429,10 +482,17 @@ class MainWindow(QMainWindow):
         """Re-render spline/refined overlays respecting current NaN mask."""
         width = self._viewer.image_width
         nan_mask = self._viewer.get_nan_column_mask(width) if width > 0 else None
+        class_map = self._build_class_map(width) if width > 0 else None
         if self._spline_indices is not None:
-            self._viewer.draw_spline(self._spline_indices, nan_mask)
+            if class_map is not None:
+                self._viewer.draw_spline_classified(self._spline_indices, class_map, nan_mask)
+            else:
+                self._viewer.draw_spline(self._spline_indices, nan_mask)
         if self._refined_indices is not None:
-            self._viewer.draw_refined(self._refined_indices, nan_mask)
+            if class_map is not None:
+                self._viewer.draw_refined_classified(self._refined_indices, class_map, nan_mask)
+            else:
+                self._viewer.draw_refined(self._refined_indices, nan_mask)
 
     def _on_clear(self):
         self._viewer.clear_seeds()
@@ -447,6 +507,64 @@ class MainWindow(QMainWindow):
         self._btn_clear_nan.setEnabled(False)
         self._lbl_nan_info.setText("")
         self._status.showMessage("Seeds cleared.")
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_1:
+            self._set_active_class(1)
+            return
+        if event.key() == Qt.Key.Key_2:
+            self._set_active_class(2)
+            return
+        if event.key() == Qt.Key.Key_3:
+            self._set_active_class(3)
+            return
+        super().keyPressEvent(event)
+
+    def _set_active_class(self, cls: int) -> None:
+        if cls not in _CLASS_STYLE:
+            return
+        self._active_class = cls
+        self._apply_active_class_style()
+        name, _, _, class_value = _CLASS_STYLE[cls]
+        value_text = "NaN" if np.isnan(class_value) else str(int(class_value))
+        self._status.showMessage(f"Active label set to {name}. Saved label-mask value: {value_text}.")
+
+    def _apply_active_class_style(self) -> None:
+        name, color_qt, _, class_value = _CLASS_STYLE[self._active_class]
+        value_text = "NaN" if np.isnan(class_value) else str(int(class_value))
+        self._lbl_class.setText(f"Active Seed Label: {name} -> {value_text}")
+        self._lbl_class.setStyleSheet(f"color: {color_qt.name()}; font-weight: bold;")
+        self._viewer.set_current_seed_class(self._active_class)
+        self._redraw_curves()
+
+    def _build_class_map(self, width: int) -> NDArray[np.int32]:
+        """Build a per-column class map from seeded class labels.
+
+        Each column inherits the class of the nearest seed in x. This makes the
+        class/color change only in regions where the user actually seeded that class.
+        """
+        class_map = np.ones(width, dtype=np.int32)
+        seeds = self._viewer.seeds
+        classes = self._viewer.seed_classes
+        if not seeds or not classes:
+            return class_map
+
+        xs = np.array([s[0] for s in seeds], dtype=np.float64)
+        cls = np.array(classes, dtype=np.int32)
+        order = np.argsort(xs)
+        xs = xs[order]
+        cls = cls[order]
+
+        if len(xs) == 1:
+            class_map[:] = int(cls[0])
+            return class_map
+
+        # Midpoints split ownership between adjacent seeds (nearest-seed regions).
+        mids = (xs[:-1] + xs[1:]) * 0.5
+        x_grid = np.arange(width, dtype=np.float64)
+        region_idx = np.searchsorted(mids, x_grid, side="right")
+        class_map[:] = cls[region_idx]
+        return class_map
 
 
 def run_app():

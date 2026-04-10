@@ -23,11 +23,16 @@ from PyQt6.QtWidgets import (
 from oct_annotator.engine import to_preview_uint8
 
 
-SEED_RADIUS = 4
+SEED_RADIUS = 2
 SEED_HITBOX_RADIUS_PX = 12
 SEED_COLOR = QColor(255, 50, 50, 140)
 SPLINE_COLOR = QColor(0, 255, 100, 110)
 REFINED_COLOR = QColor(255, 40, 40, 235)
+_CLASS_CURVE_COLORS: dict[int, QColor] = {
+    1: QColor(0, 190, 90, 220),
+    2: QColor(230, 190, 0, 220),
+    3: QColor(210, 40, 40, 220),
+}
 # Palette of (fill, edge) colors cycled across successive NaN windows
 _NAN_PALETTE: list[tuple[QColor, QColor]] = [
     (QColor(220,   0, 255,  55), QColor(220,   0, 255, 210)),  # magenta
@@ -114,13 +119,16 @@ class MScanViewer(QGraphicsView):
         self._pixmap_item = None
         self._image_shape: Tuple[int, int] | None = None  # (rows, cols)
 
-        # Seed points as (x, y) image coordinates
-        self._seeds: List[Tuple[float, float]] = []
+        # Seed points as (x, y, class_id) image coordinates
+        self._seeds: List[Tuple[float, float, int]] = []
         self._seed_items: List[QGraphicsEllipseItem] = []
+        self._current_seed_class: int = 1
 
         # Curve overlays
-        self._spline_path_item: QGraphicsPathItem | None = None
-        self._refined_path_item: QGraphicsPathItem | None = None
+        self._spline_path_items: List[QGraphicsPathItem] = []
+        self._refined_path_items: List[QGraphicsPathItem] = []
+        self._spline_color: QColor = QColor(SPLINE_COLOR)
+        self._refined_color: QColor = QColor(REFINED_COLOR)
 
         # Pan state (both mouse buttons held)
         self._panning: bool = False
@@ -139,8 +147,8 @@ class MScanViewer(QGraphicsView):
         self._seed_items.clear()
         self._scene.clear()
         self._pixmap_item = None
-        self._spline_path_item = None
-        self._refined_path_item = None
+        self._spline_path_items = []
+        self._refined_path_items = []
 
         rows, cols = data.shape
         self._image_shape = (rows, cols)
@@ -163,7 +171,14 @@ class MScanViewer(QGraphicsView):
 
     @property
     def seeds(self) -> List[Tuple[float, float]]:
-        return list(self._seeds)
+        return [(x, y) for x, y, _ in self._seeds]
+
+    @property
+    def seed_classes(self) -> List[int]:
+        return [cls for _, _, cls in self._seeds]
+
+    def set_current_seed_class(self, class_id: int) -> None:
+        self._current_seed_class = int(class_id)
 
     @property
     def image_width(self) -> int:
@@ -179,24 +194,55 @@ class MScanViewer(QGraphicsView):
 
     def draw_spline(self, y_indices: NDArray, nan_mask: NDArray[np.bool_] | None = None) -> None:
         """Overlay a spline curve on the image, with gaps for NaN regions."""
-        self._remove_item(self._spline_path_item)
-        self._spline_path_item = self._add_curve(y_indices, SPLINE_COLOR, 1.5, nan_mask)
+        self._clear_path_items(self._spline_path_items)
+        self._spline_path_items = [self._add_curve(y_indices, self._spline_color, 1.5, nan_mask)]
 
     def draw_refined(self, y_indices: NDArray, nan_mask: NDArray[np.bool_] | None = None) -> None:
         """Overlay a refined boundary curve on the image, with gaps for NaN regions."""
-        self._remove_item(self._refined_path_item)
-        self._refined_path_item = self._add_curve(y_indices, REFINED_COLOR, 2.5, nan_mask)
+        self._clear_path_items(self._refined_path_items)
+        self._refined_path_items = [self._add_curve(y_indices, self._refined_color, 2.5, nan_mask)]
+
+    def draw_spline_classified(
+        self,
+        y_indices: NDArray,
+        class_by_column: NDArray[np.int32],
+        nan_mask: NDArray[np.bool_] | None = None,
+    ) -> None:
+        """Overlay a spline curve with per-class colors along x."""
+        self._clear_path_items(self._spline_path_items)
+        items: List[QGraphicsPathItem] = []
+        for class_id, color in _CLASS_CURVE_COLORS.items():
+            items.append(self._add_curve_for_class(y_indices, class_by_column, class_id, color, 1.5, nan_mask))
+        self._spline_path_items = items
+
+    def draw_refined_classified(
+        self,
+        y_indices: NDArray,
+        class_by_column: NDArray[np.int32],
+        nan_mask: NDArray[np.bool_] | None = None,
+    ) -> None:
+        """Overlay a refined curve with per-class colors along x."""
+        self._clear_path_items(self._refined_path_items)
+        items: List[QGraphicsPathItem] = []
+        for class_id, color in _CLASS_CURVE_COLORS.items():
+            items.append(self._add_curve_for_class(y_indices, class_by_column, class_id, color, 2.5, nan_mask))
+        self._refined_path_items = items
+
+    def set_annotation_colors(self, spline_color: QColor, refined_color: QColor | None = None) -> None:
+        """Set colors used for subsequent spline/refined rendering."""
+        self._spline_color = QColor(spline_color)
+        self._refined_color = QColor(refined_color if refined_color is not None else spline_color)
 
     def clear_overlays(self) -> None:
-        self._remove_item(self._spline_path_item)
-        self._spline_path_item = None
-        self._remove_item(self._refined_path_item)
-        self._refined_path_item = None
+        self._clear_path_items(self._spline_path_items)
+        self._clear_path_items(self._refined_path_items)
+        self._spline_path_items = []
+        self._refined_path_items = []
 
     def clear_refined(self) -> None:
         """Remove only the refined (blue) overlay, keeping the spline."""
-        self._remove_item(self._refined_path_item)
-        self._refined_path_item = None
+        self._clear_path_items(self._refined_path_items)
+        self._refined_path_items = []
 
     def clear_seeds(self) -> None:
         for item in self._seed_items:
@@ -347,16 +393,17 @@ class MScanViewer(QGraphicsView):
             rows, cols = self._image_shape
             if 0 <= x < cols and 0 <= y < rows:
                 x_col = int(round(x))
-                if any(int(round(seed_x)) == x_col for seed_x, _ in self._seeds):
+                if any(int(round(seed_x)) == x_col for seed_x, _, _ in self._seeds):
                     return
-                self._seeds.append((x, y))
+                self._seeds.append((x, y, self._current_seed_class))
+                seed_color = _CLASS_CURVE_COLORS.get(self._current_seed_class, SEED_COLOR)
                 item = self._scene.addEllipse(
                     x - SEED_RADIUS,
                     y - SEED_RADIUS,
                     SEED_RADIUS * 2,
                     SEED_RADIUS * 2,
-                    QPen(SEED_COLOR),
-                    QBrush(SEED_COLOR),
+                    QPen(seed_color),
+                    QBrush(seed_color),
                 )
                 self._seed_items.append(item)
                 self.seeds_changed.emit()
@@ -414,13 +461,40 @@ class MScanViewer(QGraphicsView):
         item = self._scene.addPath(path, pen)
         return item
 
+    def _add_curve_for_class(
+        self,
+        y_indices: NDArray,
+        class_by_column: NDArray[np.int32],
+        class_id: int,
+        color: QColor,
+        width: float,
+        nan_mask: NDArray[np.bool_] | None = None,
+    ) -> QGraphicsPathItem:
+        path = QPainterPath()
+        in_segment = False
+        for x in range(len(y_indices)):
+            if nan_mask is not None and nan_mask[x]:
+                in_segment = False
+                continue
+            if int(class_by_column[x]) != class_id:
+                in_segment = False
+                continue
+            if not in_segment:
+                path.moveTo(QPointF(float(x), float(y_indices[x])))
+                in_segment = True
+            else:
+                path.lineTo(QPointF(float(x), float(y_indices[x])))
+        pen = QPen(color, width)
+        pen.setCosmetic(True)
+        return self._scene.addPath(path, pen)
+
     def _find_seed_index_near_view_pos(self, view_x: float, view_y: float) -> int | None:
         """Return the nearest seed index within the on-screen hitbox, if any."""
         if not self._seeds:
             return None
         best_idx = None
         best_dist2 = float("inf")
-        for i, (seed_x, seed_y) in enumerate(self._seeds):
+        for i, (seed_x, seed_y, _) in enumerate(self._seeds):
             vp = self.mapFromScene(QPointF(seed_x, seed_y))
             dx = float(vp.x()) - view_x
             dy = float(vp.y()) - view_y
@@ -437,3 +511,7 @@ class MScanViewer(QGraphicsView):
     def _remove_item(self, item):
         if item is not None and item.scene() is not None:
             self._scene.removeItem(item)
+
+    def _clear_path_items(self, items: List[QGraphicsPathItem]) -> None:
+        for item in items:
+            self._remove_item(item)

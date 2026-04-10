@@ -178,6 +178,8 @@ def render_annotation_png(
     nan_mask: NDArray[np.bool_],
     out_path: str,
     line_color: tuple = (0, 255, 100),
+    class_by_column: NDArray[np.int32] | None = None,
+    class_colors: dict[int, tuple[int, int, int]] | None = None,
     line_thickness: int = 2,
 ) -> None:
     """Save a PNG showing the M-scan with only the final annotation boundary.
@@ -188,7 +190,9 @@ def render_annotation_png(
     annotation   : 1-D uint16 array (cols,); sentinel columns are skipped.
     nan_mask     : bool array (cols,); True = excluded column.
     out_path     : file path for the output PNG.
-    line_color   : RGB tuple for the boundary line.
+    line_color   : RGB tuple for the boundary line (fallback/default).
+    class_by_column : optional int array (cols,), class id per column.
+    class_colors : optional mapping class_id -> RGB tuple.
     line_thickness : pixel width of the boundary line.
     """
     rows, cols = m_scan.shape
@@ -198,12 +202,19 @@ def render_annotation_png(
 
     # Draw the boundary line (skip NaN columns)
     ann = annotation.reshape(-1)
-    r, g, b = line_color
-    bgr = (b, g, r)
+    default_r, default_g, default_b = line_color
+    default_bgr = (default_b, default_g, default_r)
     half = line_thickness // 2
     for x in range(cols):
         if nan_mask[x] or ann[x] == _NAN_SENTINEL:
             continue
+        bgr = default_bgr
+        if class_by_column is not None and class_colors is not None:
+            cls = int(class_by_column[x])
+            rgb = class_colors.get(cls)
+            if rgb is not None:
+                r, g, b = rgb
+                bgr = (b, g, r)
         y_center = int(ann[x])
         y_lo = max(0, y_center - half)
         y_hi = min(rows, y_center + half + 1)
