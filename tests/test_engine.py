@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -101,8 +100,9 @@ class TestRefineBoundary:
         initial = np.full(cols, 45, dtype=np.int64)
         refined = refine_boundary(m_scan, initial)
 
-        # np.gradient places edge response one index above the step.
-        np.testing.assert_array_equal(refined, 39)
+        # The true edge response is at 39, but the hard +/-5 pixel bound around
+        # the spline clamps the result to 40 here.
+        np.testing.assert_array_equal(refined, 40)
 
     def test_smooths_single_column_outlier(self):
         """An isolated stronger deeper edge should not pull one column down."""
@@ -120,6 +120,21 @@ class TestRefineBoundary:
         # The refined curve should stay on the top layer even at the outlier column.
         assert int(refined[cols // 2]) == 39
         assert np.max(np.abs(refined.astype(np.int32) - 39)) <= 1
+
+    def test_prefers_top_layer_even_when_deeper_edge_is_stronger(self):
+        """A stronger deeper edge should not win if a plausible top layer exists."""
+        rows, cols = 120, 80
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+
+        # Visible top retinal layer.
+        m_scan[40:, :] += 1.0
+        # Stronger deeper structure that previously could pull refinement down.
+        m_scan[46:, :] += 1.35
+
+        initial = np.full(cols, 44, dtype=np.int64)
+        refined = refine_boundary(m_scan, initial)
+
+        np.testing.assert_array_equal(refined, 39)
 
     def test_ignores_early_edge_that_stays_almost_black(self):
         """Prefer the first edge whose post-edge region is visibly bright."""
@@ -152,6 +167,16 @@ class TestRefineBoundary:
         # Left half should detect the top layer; right half should stay near spline.
         assert np.all(refined[:35] == 39)
         assert np.max(np.abs(refined[45:].astype(np.int32) - 40)) <= 1
+
+    def test_refinement_stays_within_five_pixels_of_spline(self):
+        """Refinement must stay inside the hard +/-5 pixel band around the spline."""
+        rows, cols = 120, 80
+        m_scan = np.random.rand(rows, cols).astype(np.float64)
+        spline = np.full(cols, 60, dtype=np.int64)
+
+        refined = refine_boundary(m_scan, spline)
+
+        assert np.max(np.abs(refined.astype(np.int32) - spline)) <= 5
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,11 @@ import cv2
 
 _OCT_CLIP_MIN = 0.0
 _OCT_CLIP_MAX = 4.0
-_REFINE_DELTA = 7
-_FIRST_LAYER_RELATIVE_THRESHOLD = 0.85
+_REFINE_DELTA = 5
+_FIRST_LAYER_ABOVE_RELATIVE_THRESHOLD = 0.55
+_FIRST_LAYER_BELOW_RELATIVE_THRESHOLD = 0.85
 _FIRST_LAYER_MIN_BRIGHTNESS = 0.08
-_SPLINE_DISTANCE_DECAY = 0.12
-_SPLINE_PRIOR_RELATIVE_THRESHOLD = 0.45
+_FIRST_LAYER_EARLY_SELECTION_RATIO = 0.6
 _REFINE_GRADIENT_SMOOTHING = 5
 _REFINE_MEDIAN_SIZE = 7
 _REFINE_OUTPUT_SMOOTHING = 9
@@ -107,24 +107,33 @@ def refine_boundary(
     post_intensity = disp[post_row_idx, col_idx]
 
     local_max = np.max(windows, axis=0)
-    strong_mask = windows >= (_FIRST_LAYER_RELATIVE_THRESHOLD * local_max[np.newaxis, :])
+    relative_thresholds = np.where(
+        offsets[:, np.newaxis] <= 0,
+        _FIRST_LAYER_ABOVE_RELATIVE_THRESHOLD,
+        _FIRST_LAYER_BELOW_RELATIVE_THRESHOLD,
+    )
+    strong_mask = windows >= (relative_thresholds * local_max[np.newaxis, :])
     strong_mask &= post_intensity >= _FIRST_LAYER_MIN_BRIGHTNESS
-
-    # Use the spline as a region prior: candidates farther away from the spline
-    # are less likely to belong to the intended top retinal layer.
-    distance_penalty = np.exp(-_SPLINE_DISTANCE_DECAY * np.abs(offsets))[:, np.newaxis]
-    weighted_windows = np.where(strong_mask, windows * distance_penalty, -np.inf)
 
     # If a column is flat, keep the spline position there.
     has_signal = local_max > 0
     raw_refined = y_init.copy()
 
-    candidate_columns = np.any(strong_mask, axis=0) & has_signal
+    # If a plausible top-rim candidate exists at or above the spline, only
+    # consider those candidates. Deeper edges are only considered as fallback.
+    above_mask = strong_mask & (offsets[:, np.newaxis] <= 0)
+    preferred_mask = np.where(np.any(above_mask, axis=0)[np.newaxis, :], above_mask, strong_mask)
+
+    candidate_columns = np.any(preferred_mask, axis=0) & has_signal
     if np.any(candidate_columns):
-        candidate_scores = weighted_windows[:, candidate_columns]
-        weighted_max = np.max(candidate_scores, axis=0)
+        candidate_scores = np.where(
+            preferred_mask[:, candidate_columns],
+            windows[:, candidate_columns],
+            -np.inf,
+        )
+        best_scores = np.max(candidate_scores, axis=0)
         earliest_good_mask = candidate_scores >= (
-            _SPLINE_PRIOR_RELATIVE_THRESHOLD * weighted_max[np.newaxis, :]
+            _FIRST_LAYER_EARLY_SELECTION_RATIO * best_scores[np.newaxis, :]
         )
         best_idx = np.argmax(earliest_good_mask, axis=0)
         raw_refined[candidate_columns] = y_init[candidate_columns] + offsets[best_idx]
@@ -137,7 +146,12 @@ def refine_boundary(
     # uniform averaging reduces jitter while preserving the overall shape.
     refined = median_filter(raw_refined, size=_REFINE_MEDIAN_SIZE, mode="nearest")
     refined = uniform_filter1d(refined.astype(np.float32), size=_REFINE_OUTPUT_SMOOTHING, mode="nearest")
-    refined = np.clip(np.round(refined), 0, rows - 1)
+    refined = np.round(refined).astype(np.int64)
+
+    # Keep the final result inside the allowed +/- delta band around the spline.
+    min_allowed = np.clip(spline_indices.astype(np.int64) - delta, 0, rows - 1)
+    max_allowed = np.clip(spline_indices.astype(np.int64) + delta, 0, rows - 1)
+    refined = np.clip(refined, min_allowed, max_allowed)
 
     return refined.astype(np.uint16)
 

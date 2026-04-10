@@ -8,7 +8,7 @@ A lightweight, callable desktop tool for annotating retinal layer boundaries in 
 
 - **PyQt6 GUI** — native High-DPI rendering on Windows/macOS/Linux
 - **Automatic spline updates** — a smooth interpolating spline is redrawn after every seed edit; no separate fit step required
-- **Spline-guided fine-tuning** — refinement favors the first strong dark-to-bright edge near the spline instead of blindly taking the strongest deeper peak
+- **Spline-guided fine-tuning** — refinement favors the first plausible dark-to-bright edge at the retinal top rim and stays within a hard +/-5 pixel band around the spline
 - **Smoother retinal boundary detection** — gradient maps and final boundaries are smoothed across neighboring A-scans to suppress single-column outliers and jitter
 - **Black-background aware refinement** — if the top layer fades out near scan ends, fine-tuning keeps the spline instead of snapping down to a deeper layer
 - **Multi-class regional classification** — press `1`, `2`, `3` to classify seed regions; each seed stores its class, and boundaries are colored per-region (green, yellow, red), with class labels exported to `_label_mask.npy`
@@ -121,7 +121,7 @@ On Windows, you can also double-click `start_oct_annotate.bat` from the project 
 2. **Review the file list** — the dropdown shows only source scans and hides generated `*_annotations.npy` files
 3. **Place seeds and classify** — left-click on the image to mark boundary control points (red dots); press `1` (green), `2` (yellow), or `3` (red) to set the classification for subsequently placed seeds; the spline updates automatically once at least two seeds exist
 4. **Edit seeds quickly** — right-click removes the most recent seed, or right-click directly on an existing seed to remove that exact point
-5. **Fine-tune** — press `A` or click **Fine-tune** to refine the spline into a smooth boundary that follows the earliest plausible top-layer edge near the spline (darker green curve for refined vs. bright green for original spline)
+5. **Fine-tune** — press `A` or click **Fine-tune** to refine the spline into a smooth boundary that follows the earliest plausible top-layer rim near the spline while staying within +/-5 pixels of it (darker green curve for refined vs. bright green for original spline)
 6. **Mark excluded regions** — add one or more NaN windows for columns that should export as the NaN sentinel value `65535`
 7. **Save** — press `D` or click **Save** to write:
    - `annotated/<source_stem>_annotations.npy` — boundary indices with NaN regions as sentinel `65535`
@@ -135,10 +135,10 @@ If the current folder is exhausted, the app attempts to open the next sibling ex
 
 ### Fine-tuning behavior
 
-- Fine-tuning searches in a local window around the current spline, so refinement stays tied to the user-guided boundary instead of drifting across the scan.
+- Fine-tuning searches only inside a local +/-5 pixel window around the current spline, so refinement stays tied to the user-guided boundary instead of drifting across the scan.
 - Only positive vertical gradients are considered, which biases the result toward the dark-to-bright transition expected at the top retinal layer.
 - Candidates must also have visible post-edge brightness, which helps reject faint early edges that remain almost black.
-- When multiple nearby candidates are plausible, the algorithm prefers the earliest sufficiently strong one, which improves first-layer detection.
+- When multiple nearby candidates are plausible, the algorithm prefers the earliest sufficiently strong candidate at or above the spline before considering deeper fallback edges.
 - The final boundary is median-filtered and then smoothed across columns to reduce isolated jumps while preserving the overall layer shape.
 - If no plausible bright-tissue candidate exists in a column, the spline position is kept there; this is important when the retinal surface disappears into black background at the scan edges.
 
@@ -209,7 +209,7 @@ pip install opencv-python
 | Class | Tests |
 |---|---|
 | `TestFitSpline` | correct width, integer dtype, linear 2-point case, single-point error, in-range values |
-| `TestRefineBoundary` | edge snapping, first-layer preference, outlier smoothing, dim-edge rejection, black-background fallback, output dtype, output shape |
+| `TestRefineBoundary` | edge snapping, first-layer preference, stronger-deeper-edge rejection, outlier smoothing, dim-edge rejection, black-background fallback, +/-5 spline bound, output dtype, output shape |
 | `TestIntegrationSaveLoad` | full annotate→save→reload round-trip, filename convention |
 | `TestPerformance` | refinement < 100 ms on a 1024 × 1000 scan |
 
