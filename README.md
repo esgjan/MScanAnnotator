@@ -11,15 +11,15 @@ A lightweight, callable desktop tool for annotating retinal layer boundaries in 
 - **Spline-guided fine-tuning** — refinement favors the first plausible dark-to-bright edge at the retinal top rim and stays within a hard +/-5 pixel band around the spline
 - **Smoother retinal boundary detection** — gradient maps and final boundaries are smoothed across neighboring A-scans to suppress single-column outliers and jitter
 - **Black-background aware refinement** — if the top layer fades out near scan ends, fine-tuning keeps the spline instead of snapping down to a deeper layer
-- **Multi-class regional classification** — press `1`, `2`, `3` to classify seed regions; each seed stores its class, and boundaries are colored per-region (green, yellow, red), with class labels exported to `_label_mask.npy`
+- **Multi-class regional classification** — press `1`, `2`, `3`, `4` to classify seed regions; each seed stores its class, and boundaries are colored per-region (dark green, light green, orange, red), with class labels exported to a combined `.npy` file
 - **Per-class PNG overlay** — saved PNG shows colored boundary regions matching the assigned classes
-- **Experiment-friendly output layout** — saved annotations, label masks, and overlay PNGs go to an `annotated/` subfolder
+- **Experiment-friendly output layout** — saved annotations, class labels, and overlay PNGs go to an `annotated/` subfolder
 - **Fast review workflow** — saving or flagging a scan automatically advances to the next source file and can continue into the next sibling experiment folder
 - **Clean file list** — only source `*.npy` scans appear in the dropdown; generated `*_annotations.npy` files are excluded
 - **Improved seed editing** — right-click removes the latest seed, right-clicking a seed removes that exact seed, and duplicate X-columns are ignored
 - **NaN window tools** — create multiple exclusion windows with automatic color cycling; excluded columns are exported with a sentinel value
 - **Too-hard triage** — one action marks the OCT as all-NaN (too hard to label) and saves it to the regular `annotated/` folder, then advances to the next file
-- **Keyboard shortcuts** — `1/2/3` classify seed classes (green/yellow/red), `A` fine-tunes, `D` saves, `F` marks too hard
+- **Keyboard shortcuts** — `1/2/3/4` classify seed classes (dark green/light green/orange/red), `A` fine-tunes, `D` saves, `F` marks too hard
 - **Scroll-to-zoom** — inspect individual A-scans at any magnification
 - **Pan and reset controls** — hold left + right mouse buttons to pan; middle-click resets zoom to fit
 - **CLI entry point** — `oct-annotate [<folder>]` launches the app directly from the terminal
@@ -119,14 +119,13 @@ On Windows, you can also double-click `start_oct_annotate.bat` from the project 
 1. **Open folder** — select a directory containing source `*.npy` M-scan files  
    *(expected shape: `rows × columns`, float64, values in [0, 1])*
 2. **Review the file list** — the dropdown shows only source scans and hides generated `*_annotations.npy` files
-3. **Place seeds and classify** — left-click on the image to mark boundary control points (red dots); press `1` (green), `2` (yellow), or `3` (red) to set the classification for subsequently placed seeds; the spline updates automatically once at least two seeds exist
+3. **Place seeds and classify** — left-click on the image to mark boundary control points (red dots); press `1` (dark green), `2` (light green), `3` (orange), or `4` (red) to set the classification for subsequently placed seeds; the spline updates automatically once at least two seeds exist
 4. **Edit seeds quickly** — right-click removes the most recent seed, or right-click directly on an existing seed to remove that exact point
 5. **Fine-tune** — press `A` or click **Fine-tune** to refine the spline into a smooth boundary that follows the earliest plausible top-layer rim near the spline while staying within +/-5 pixels of it (darker green curve for refined vs. bright green for original spline)
 6. **Mark excluded regions** — add one or more NaN windows for columns that should export as the NaN sentinel value `65535`
 7. **Save** — press `D` or click **Save** to write:
-   - `annotated/<source_stem>_annotations.npy` — boundary indices with NaN regions as sentinel `65535`
-   - `annotated/<source_stem>_label_mask.npy` — per-column float32 values (1.0, 2.0, or NaN) for each classified region
-   - `annotated/<source_stem>_annotations.png` — overlay with colored boundaries (green, yellow, red) matching assigned classes
+   - `annotated/<source_stem>_annotations.npy` — shape `(columns, 2)` where column 0 = boundary indices (float32) and column 1 = class labels (1.0, 2.0, 3.0, 4.0, or NaN)
+   - `annotated/<source_stem>_annotations.png` — overlay with colored boundaries (dark green, light green, orange, red) matching assigned classes
    
    The next file is loaded automatically after saving.
 8. **Flag difficult scans** — press `F` or click **Too Hard** to mark the entire OCT as all-NaN (indicating difficulty in labeling), save it to `annotated/`, and continue to the next file

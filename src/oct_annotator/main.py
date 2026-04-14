@@ -42,9 +42,10 @@ DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy_raw_snippets")
 
 # class_id -> (name, UI color, PNG RGB color, label-mask value)
 _CLASS_STYLE: dict[int, tuple[str, QColor, tuple[int, int, int], float]] = {
-    1: ("Class 1", QColor(0, 190, 90), (0, 190, 90), 1.0),
-    2: ("Class 2", QColor(230, 190, 0), (230, 190, 0), 2.0),
-    3: ("Class 3", QColor(210, 40, 40), (210, 40, 40), float("nan")),
+    1: ("Class 1", QColor(0, 190, 90), (0, 190, 90), 1.0),  # Dark green
+    2: ("Class 2", QColor(100, 200, 100), (100, 200, 100), 2.0),  # Light green
+    3: ("Class 3", QColor(255, 165, 50), (255, 165, 50), 3.0),  # Orange
+    4: ("Class 4", QColor(210, 40, 40), (210, 40, 40), float("nan")),  # Red (NaN)
 }
 
 
@@ -350,28 +351,31 @@ class MainWindow(QMainWindow):
 
         # Apply NaN sentinel to excluded regions:
         # - NaN windows
-        # - class-3 regions (stored as NaN-equivalent in annotation output)
+        # - class-3 and class-4 regions (stored as NaN-equivalent in annotation output)
         nan_mask = self._viewer.get_nan_column_mask(cols)
         class3_mask = class_map == 3
+        class4_mask = class_map == 4
         ann[class3_mask] = NAN_SENTINEL
+        ann[class4_mask] = NAN_SENTINEL
         ann[nan_mask] = NAN_SENTINEL
-        to_save = ann.reshape(-1, 1)
-
-        # Save boundary .npy annotation
-        out_dir = self._annotation_output_dir(src_path)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        out_npy = out_dir / (src_path.stem + "_annotations.npy")
-        np.save(str(out_npy), to_save)
 
         # Save class label mask .npy with per-region values from seed classes.
         label_mask = np.empty(cols, dtype=np.float32)
         label_mask[class_map == 1] = 1.0
         label_mask[class_map == 2] = 2.0
-        label_mask[class_map == 3] = np.nan
+        label_mask[class_map == 3] = 3.0
+        label_mask[class_map == 4] = 4.0
         label_mask[nan_mask] = np.nan
-        out_label_npy = out_dir / (src_path.stem + "_label_mask.npy")
-        np.save(str(out_label_npy), label_mask.reshape(-1, 1))
+
+        # Combine annotations and labels into a single 2D array
+        # Column 0: boundary indices, Column 1: class labels
+        combined_data = np.column_stack([ann.astype(np.float32), label_mask])
+        
+        out_dir = self._annotation_output_dir(src_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        out_combined_npy = out_dir / (src_path.stem + "_annotations.npy")
+        np.save(str(out_combined_npy), combined_data)
 
         # Save .png visual overlay with class colors per seeded region.
         out_png = out_dir / (src_path.stem + "_annotations.png")
@@ -391,8 +395,8 @@ class MainWindow(QMainWindow):
         n_nan = int(nan_mask.sum())
         nan_note = f"  ({n_nan} cols excluded)" if n_nan else ""
         self._status.showMessage(
-            f"Saved \u2192 {out_dir.name}/{out_npy.name} + {out_label_npy.name} + {out_png.name}  "
-            f"(shape {to_save.shape}){nan_note}"
+            f"Saved \u2192 {out_dir.name}/{out_combined_npy.name} + {out_png.name}  "
+            f"(shape {combined_data.shape}){nan_note}"
         )
 
         self._load_next_file(current_idx)
