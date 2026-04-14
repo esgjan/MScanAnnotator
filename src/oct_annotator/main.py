@@ -351,11 +351,9 @@ class MainWindow(QMainWindow):
 
         # Apply NaN sentinel to excluded regions:
         # - NaN windows
-        # - class-3 and class-4 regions (stored as NaN-equivalent in annotation output)
+        # - class-4 regions (NaN class)
         nan_mask = self._viewer.get_nan_column_mask(cols)
-        class3_mask = class_map == 3
         class4_mask = class_map == 4
-        ann[class3_mask] = NAN_SENTINEL
         ann[class4_mask] = NAN_SENTINEL
         ann[nan_mask] = NAN_SENTINEL
 
@@ -364,7 +362,7 @@ class MainWindow(QMainWindow):
         label_mask[class_map == 1] = 1.0
         label_mask[class_map == 2] = 2.0
         label_mask[class_map == 3] = 3.0
-        label_mask[class_map == 4] = 4.0
+        label_mask[class_map == 4] = np.nan
         label_mask[nan_mask] = np.nan
 
         # Combine annotations and labels into a single 2D array
@@ -392,8 +390,8 @@ class MainWindow(QMainWindow):
             class_colors=png_class_colors,
         )
 
-        n_nan = int(nan_mask.sum())
-        nan_note = f"  ({n_nan} cols excluded)" if n_nan else ""
+        n_nan = int(nan_mask.sum()) + int(class4_mask.sum())
+        nan_note = f"  ({n_nan} cols NaN)" if n_nan else ""
         self._status.showMessage(
             f"Saved \u2192 {out_dir.name}/{out_combined_npy.name} + {out_png.name}  "
             f"(shape {combined_data.shape}){nan_note}"
@@ -521,6 +519,9 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key.Key_3:
             self._set_active_class(3)
             return
+        if event.key() == Qt.Key.Key_4:
+            self._set_active_class(4)
+            return
         super().keyPressEvent(event)
 
     def _set_active_class(self, cls: int) -> None:
@@ -543,8 +544,8 @@ class MainWindow(QMainWindow):
     def _build_class_map(self, width: int) -> NDArray[np.int32]:
         """Build a per-column class map from seeded class labels.
 
-        Each column inherits the class of the nearest seed in x. This makes the
-        class/color change only in regions where the user actually seeded that class.
+        Each column inherits the class of the seed immediately to its left.
+        The color/label changes exactly at the seed's x-position.
         """
         class_map = np.ones(width, dtype=np.int32)
         seeds = self._viewer.seeds
@@ -562,10 +563,10 @@ class MainWindow(QMainWindow):
             class_map[:] = int(cls[0])
             return class_map
 
-        # Midpoints split ownership between adjacent seeds (nearest-seed regions).
-        mids = (xs[:-1] + xs[1:]) * 0.5
+        # Use seed x-positions as breakpoints: placing a seed at x causes the
+        # color to change starting from the PREVIOUS seed's position.
         x_grid = np.arange(width, dtype=np.float64)
-        region_idx = np.searchsorted(mids, x_grid, side="right")
+        region_idx = np.clip(np.searchsorted(xs, x_grid, side="right"), 0, len(cls) - 1)
         class_map[:] = cls[region_idx]
         return class_map
 
