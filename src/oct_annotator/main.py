@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QFileDialog,
     QComboBox,
+    QSpinBox,
     QStatusBar,
     QMessageBox,
 )
@@ -58,6 +59,8 @@ class MainWindow(QMainWindow):
         # State
         self._npy_files: List[Path] = []
         self._current_data: NDArray | None = None
+        self._current_display_data: NDArray | None = None
+        self._repeat_count: int = 1
         self._spline_indices: NDArray | None = None
         self._refined_indices: NDArray | None = None
         self._active_class: int = 1
@@ -150,6 +153,18 @@ class MainWindow(QMainWindow):
 
         toolbar2.addStretch(1)
 
+        toolbar2.addWidget(QLabel("Repeat A-scans:"))
+        self._spin_repeat = QSpinBox()
+        self._spin_repeat.setMinimum(1)
+        self._spin_repeat.setMaximum(8)
+        self._spin_repeat.setValue(1)
+        self._spin_repeat.setToolTip(
+            "Tile all A-scans N times side-by-side for easier annotation.\n"
+            "Seeds and spline are placed on the wider tiled image.\n"
+            "On Save the annotations are averaged over all repeats back to original width."
+        )
+        toolbar2.addWidget(self._spin_repeat)
+
         self._btn_add_nan = QPushButton("Add NaN Window")
         self._btn_add_nan.setEnabled(False)
         self._btn_add_nan.setToolTip("Add a pair of draggable vertical bars to mark excluded columns")
@@ -195,6 +210,7 @@ class MainWindow(QMainWindow):
         self._btn_clear_nan.clicked.connect(self._on_clear_nan_windows)
         self._viewer.seeds_changed.connect(self._on_seeds_changed)
         self._viewer.nan_windows_changed.connect(self._on_nan_windows_changed)
+        self._spin_repeat.valueChanged.connect(self._on_repeat_changed)
 
     # ---- Slots ---------------------------------------------------------
 
@@ -263,10 +279,37 @@ class MainWindow(QMainWindow):
         self._btn_clear_nan.setEnabled(False)
         self._lbl_nan_info.setText("")
 
-        self._viewer.set_image(self._current_data)
+        self._apply_display_data()
         self._apply_active_class_style()
+
+    def _on_repeat_changed(self, value: int) -> None:
+        """Called when the repeat spinbox value changes."""
+        self._repeat_count = value
+        if self._current_data is not None:
+            # Changing repeat count invalidates all seeds / spline / refinement
+            # since the coordinate space changes.
+            self._spline_indices = None
+            self._refined_indices = None
+            self._btn_refine.setEnabled(False)
+            self._btn_save.setEnabled(False)
+            self._btn_reset_refine.setEnabled(False)
+            self._apply_display_data()
+
+    def _apply_display_data(self) -> None:
+        """Tile the current M-scan N times and refresh the viewer."""
+        if self._current_data is None:
+            return
+        if self._repeat_count > 1:
+            self._current_display_data = np.repeat(self._current_data, self._repeat_count, axis=1)
+        else:
+            self._current_display_data = self._current_data
+        self._viewer.set_image(self._current_display_data)
+        path = self._npy_files[self._combo_files.currentIndex()]
+        orig_shape = self._current_data.shape
+        disp_shape = self._current_display_data.shape
+        repeat_note = f"  [×{self._repeat_count} repeat → display {disp_shape}]" if self._repeat_count > 1 else ""
         self._status.showMessage(
-            f"Loaded {path.name}  —  shape {self._current_data.shape}  |  "
+            f"Loaded {path.name}  —  original shape {orig_shape}{repeat_note}  |  "
             "Click on the image to place seed points. Spline updates automatically."
         )
 
@@ -308,8 +351,13 @@ class MainWindow(QMainWindow):
     def _on_refine(self):
         if self._spline_indices is None or self._current_data is None:
             return
+        display_data = (
+            self._current_display_data
+            if self._current_display_data is not None
+            else self._current_data
+        )
         self._refined_indices = refine_boundary(
-            self._current_data, self._spline_indices
+            display_data, self._spline_indices
         )
         width = self._viewer.image_width
         nan_mask = self._viewer.get_nan_column_mask(width)
@@ -337,28 +385,50 @@ class MainWindow(QMainWindow):
 
         current_idx = self._combo_files.currentIndex()
         src_path = self._npy_files[current_idx]
-        m_scan = self._current_data
-        rows, cols = m_scan.shape
-        class_map = self._build_class_map(cols)
+        m_scan = self._current_data          # always the original, non-tiled scan
+        orig_rows, orig_cols = m_scan.shape
+        display_cols = orig_cols * self._repeat_count
 
-        # Ensure annotation length matches the number of A-scans (columns)
-        ann = indices.astype(np.uint16).reshape(-1)
-        if len(ann) != cols:
-            ann_resized = np.full(cols, NAN_SENTINEL, dtype=np.uint16)
-            n = min(len(ann), cols)
-            ann_resized[:n] = ann[:n]
-            ann = ann_resized
+        # Build class map and raw annotation in display (tiled) coordinate space.
+        class_map_full = self._build_class_map(display_cols)
 
-        # Apply NaN sentinel to excluded regions:
-        # - NaN windows
-        # - class-4 regions (NaN class)
-        nan_mask = self._viewer.get_nan_column_mask(cols)
+        ann_full = indices.astype(np.uint16).reshape(-1)
+        if len(ann_full) != display_cols:
+            ann_resized = np.full(display_cols, NAN_SENTINEL, dtype=np.uint16)
+            n = min(len(ann_full), display_cols)
+            ann_resized[:n] = ann_full[:n]
+            ann_full = ann_resized
+
+        # Apply NaN sentinel in display space.
+        nan_mask_full = self._viewer.get_nan_column_mask(display_cols)
+        class4_mask_full = class_map_full == 4
+        ann_full[class4_mask_full] = NAN_SENTINEL
+        ann_full[nan_mask_full] = NAN_SENTINEL
+
+        # ------------------------------------------------------------------
+        # Fold N repeats back to original width.
+        # With np.repeat the layout is [col0×N, col1×N, ...] so reshape to
+        # (orig_cols, N) and average along axis=1.
+        # Boundary: average valid (non-sentinel) values across repeats.
+        # Class map: use first repeat (seeds are typically placed consistently).
+        # NaN mask: a column is excluded only when ALL repeats excluded it.
+        # ------------------------------------------------------------------
+        ann_tiled = ann_full.reshape(orig_cols, self._repeat_count)
+        ann = np.full(orig_cols, NAN_SENTINEL, dtype=np.uint16)
+        for c in range(orig_cols):
+            col_vals = ann_tiled[c, :]
+            valid = col_vals[col_vals != NAN_SENTINEL]
+            if len(valid) > 0:
+                ann[c] = np.uint16(
+                    min(int(round(float(np.mean(valid.astype(np.float64))))), 65534)
+                )
+
+        class_map = class_map_full.reshape(orig_cols, self._repeat_count)[:, 0]
+        nan_mask = np.all(nan_mask_full.reshape(orig_cols, self._repeat_count), axis=1)
         class4_mask = class_map == 4
-        ann[class4_mask] = NAN_SENTINEL
-        ann[nan_mask] = NAN_SENTINEL
 
         # Save class label mask .npy with per-region values from seed classes.
-        label_mask = np.empty(cols, dtype=np.float32)
+        label_mask = np.empty(orig_cols, dtype=np.float32)
         label_mask[class_map == 1] = 1.0
         label_mask[class_map == 2] = 2.0
         label_mask[class_map == 3] = 3.0
@@ -368,10 +438,10 @@ class MainWindow(QMainWindow):
         # Combine annotations and labels into a single 2D array
         # Column 0: boundary indices, Column 1: class labels
         combined_data = np.column_stack([ann.astype(np.float32), label_mask])
-        
+
         out_dir = self._annotation_output_dir(src_path)
         out_dir.mkdir(parents=True, exist_ok=True)
-        
+
         out_combined_npy = out_dir / (src_path.stem + "_annotations.npy")
         np.save(str(out_combined_npy), combined_data)
 
@@ -392,9 +462,10 @@ class MainWindow(QMainWindow):
 
         n_nan = int(nan_mask.sum()) + int(class4_mask.sum())
         nan_note = f"  ({n_nan} cols NaN)" if n_nan else ""
+        repeat_note = f"  (×{self._repeat_count} averaged)" if self._repeat_count > 1 else ""
         self._status.showMessage(
             f"Saved \u2192 {out_dir.name}/{out_combined_npy.name} + {out_png.name}  "
-            f"(shape {combined_data.shape}){nan_note}"
+            f"(shape {combined_data.shape}){nan_note}{repeat_note}"
         )
 
         self._load_next_file(current_idx)
