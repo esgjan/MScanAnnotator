@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QFileDialog,
     QComboBox,
+    QLineEdit,
     QSpinBox,
     QStatusBar,
     QMessageBox,
@@ -40,6 +41,7 @@ from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_
 # Sentinel value written into uint16 annotations for NaN / excluded columns
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
 DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy_raw_snippets")
+DEFAULT_OUTPUT_DIRECTORY = Path(r"C:\Users\ZOJESSIG\Desktop\Diest_1704")
 
 # class_id -> (name, UI color, PNG RGB color, label-mask value)
 _CLASS_STYLE: dict[int, tuple[str, QColor, tuple[int, int, int], float]] = {
@@ -64,6 +66,7 @@ class MainWindow(QMainWindow):
         self._spline_indices: NDArray | None = None
         self._refined_indices: NDArray | None = None
         self._active_class: int = 1
+        self._output_root_directory: Path = DEFAULT_OUTPUT_DIRECTORY
 
         self._build_ui()
         self._connect_signals()
@@ -74,6 +77,30 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _is_source_scan(path: Path) -> bool:
         return path.suffix == ".npy" and not path.stem.endswith("_annotations")
+
+    @staticmethod
+    def _experiment_output_parts(source_path: Path) -> tuple[str, ...]:
+        """Extract the experiment folder structure from source path.
+        
+        Returns the parent folder (experiment name) and original subfolder name
+        to preserve hierarchy in output.
+        """
+        source_dir = source_path.parent
+        parent_dir = source_dir.parent
+        if parent_dir == source_dir:
+            return (source_dir.name,)
+        if not parent_dir.name:
+            return (source_dir.name,)
+        return (parent_dir.name, source_dir.name)
+
+    def _output_dir_for_source(self, source_path: Path) -> Path:
+        """Get output directory preserving source hierarchy under selected save root."""
+        return self._output_root_directory.joinpath(*self._experiment_output_parts(source_path))
+
+    def _set_output_root_directory(self, directory: Path) -> None:
+        self._output_root_directory = directory
+        if hasattr(self, "_edit_output_dir"):
+            self._edit_output_dir.setText(str(directory))
 
     @staticmethod
     def _annotation_output_dir(source_path: Path) -> Path:
@@ -147,11 +174,17 @@ class MainWindow(QMainWindow):
         toolbar2 = QHBoxLayout()
         root.addLayout(toolbar2)
 
+        toolbar2.addWidget(QLabel("Save root:"))
+        self._edit_output_dir = QLineEdit()
+        self._edit_output_dir.setReadOnly(True)
+        self._edit_output_dir.setText(str(self._output_root_directory))
+        self._edit_output_dir.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._edit_output_dir.setToolTip("Click to choose save root folder")
+        toolbar2.addWidget(self._edit_output_dir, stretch=1)
+
         self._btn_zoom_fit = QPushButton("Zoom Fit")
         self._btn_zoom_fit.setToolTip("Reset zoom to fit entire image (also: middle-click)")
         toolbar2.addWidget(self._btn_zoom_fit)
-
-        toolbar2.addStretch(1)
 
         toolbar2.addWidget(QLabel("Repeat A-scans:"))
         self._spin_repeat = QSpinBox()
@@ -164,22 +197,6 @@ class MainWindow(QMainWindow):
             "On Save the annotations are averaged over all repeats back to original width."
         )
         toolbar2.addWidget(self._spin_repeat)
-
-        self._btn_add_nan = QPushButton("Add NaN Window")
-        self._btn_add_nan.setEnabled(False)
-        self._btn_add_nan.setToolTip("Add a pair of draggable vertical bars to mark excluded columns")
-        toolbar2.addWidget(self._btn_add_nan)
-
-        self._btn_remove_nan = QPushButton("Remove Last NaN Window")
-        self._btn_remove_nan.setEnabled(False)
-        toolbar2.addWidget(self._btn_remove_nan)
-
-        self._btn_clear_nan = QPushButton("Clear All NaN Windows")
-        self._btn_clear_nan.setEnabled(False)
-        toolbar2.addWidget(self._btn_clear_nan)
-
-        self._lbl_nan_info = QLabel("")
-        toolbar2.addWidget(self._lbl_nan_info)
 
         # Viewer
         self._viewer = MScanViewer()
@@ -198,6 +215,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         self._btn_open.clicked.connect(self._on_open)
+        self._edit_output_dir.mousePressEvent = lambda _: self._on_choose_output_directory()
         self._combo_files.currentIndexChanged.connect(self._on_file_selected)
         self._btn_refine.clicked.connect(self._on_refine)
         self._btn_reset_refine.clicked.connect(self._on_reset_refine)
@@ -205,11 +223,7 @@ class MainWindow(QMainWindow):
         self._btn_flag.clicked.connect(self._on_flag_too_hard)
         self._btn_clear.clicked.connect(self._on_clear)
         self._btn_zoom_fit.clicked.connect(self._viewer.zoom_fit)
-        self._btn_add_nan.clicked.connect(self._on_add_nan_window)
-        self._btn_remove_nan.clicked.connect(self._on_remove_nan_window)
-        self._btn_clear_nan.clicked.connect(self._on_clear_nan_windows)
         self._viewer.seeds_changed.connect(self._on_seeds_changed)
-        self._viewer.nan_windows_changed.connect(self._on_nan_windows_changed)
         self._spin_repeat.valueChanged.connect(self._on_repeat_changed)
 
     # ---- Slots ---------------------------------------------------------
@@ -219,6 +233,16 @@ class MainWindow(QMainWindow):
         directory = QFileDialog.getExistingDirectory(self, "Select M-scan directory", str(start_dir))
         if directory:
             self._load_directory(directory)
+
+    def _on_choose_output_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select save root directory",
+            str(self._output_root_directory),
+        )
+        if directory:
+            self._set_output_root_directory(Path(directory))
+            self._status.showMessage(f"Save root set to {self._output_root_directory}")
 
     def _initial_open_directory(self) -> Path:
         if self._npy_files:
@@ -274,10 +298,6 @@ class MainWindow(QMainWindow):
         self._refined_indices = None
         self._btn_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
-        self._btn_add_nan.setEnabled(True)
-        self._btn_remove_nan.setEnabled(False)
-        self._btn_clear_nan.setEnabled(False)
-        self._lbl_nan_info.setText("")
 
         self._apply_display_data()
         self._apply_active_class_style()
@@ -341,12 +361,12 @@ class MainWindow(QMainWindow):
         nan_mask = self._viewer.get_nan_column_mask(width)
         class_map = self._build_class_map(width)
         self._viewer.draw_spline_classified(self._spline_indices, class_map, nan_mask)
-        self._viewer.clear_refined()
         self._btn_refine.setEnabled(True)
         self._btn_save.setEnabled(True)
         self._btn_reset_refine.setEnabled(False)
         self._refined_indices = None
-        self._status.showMessage("Spline updated automatically. Press Fine-tune or Save.")
+        self._status.showMessage("Spline updated. Running fine-tune…")
+        self._on_refine()
 
     def _on_refine(self):
         if self._spline_indices is None or self._current_data is None:
@@ -439,8 +459,13 @@ class MainWindow(QMainWindow):
         # Column 0: boundary indices, Column 1: class labels
         combined_data = np.column_stack([ann.astype(np.float32), label_mask])
 
-        out_dir = self._annotation_output_dir(src_path)
+        out_dir = self._output_dir_for_source(src_path)
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy original snippet to output folder
+        copied_snippet = out_dir / src_path.name
+        if src_path.resolve() != copied_snippet.resolve():
+            shutil.copy2(src_path, copied_snippet)
 
         out_combined_npy = out_dir / (src_path.stem + "_annotations.npy")
         np.save(str(out_combined_npy), combined_data)
@@ -464,7 +489,7 @@ class MainWindow(QMainWindow):
         nan_note = f"  ({n_nan} cols NaN)" if n_nan else ""
         repeat_note = f"  (×{self._repeat_count} averaged)" if self._repeat_count > 1 else ""
         self._status.showMessage(
-            f"Saved \u2192 {out_dir.name}/{out_combined_npy.name} + {out_png.name}  "
+            f"Saved \u2192 {out_dir}/{copied_snippet.name} + {out_combined_npy.name} + {out_png.name}  "
             f"(shape {combined_data.shape}){nan_note}{repeat_note}"
         )
 
@@ -498,9 +523,14 @@ class MainWindow(QMainWindow):
             cols = self._current_data.shape[1]
             blank_ann = np.full(cols, NAN_SENTINEL, dtype=np.uint16)
             
-            # Save to regular annotated folder (not 2hard2label)
-            out_dir = self._annotation_output_dir(src_path)
+            # Save to output directory using experiment structure
+            out_dir = self._output_dir_for_source(src_path)
             out_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy original snippet
+            copied_snippet = out_dir / src_path.name
+            if src_path.resolve() != copied_snippet.resolve():
+                shutil.copy2(src_path, copied_snippet)
             
             out_ann_npy = out_dir / (src_path.stem + "_annotations.npy")
             np.save(str(out_ann_npy), blank_ann.reshape(-1, 1))
@@ -509,7 +539,7 @@ class MainWindow(QMainWindow):
             out_png = out_dir / (src_path.stem + "_annotations.png")
             render_annotation_png(self._current_data, blank_ann, nan_mask, str(out_png))
             self._status.showMessage(
-                f"Marked as too hard – all boundaries set to NaN. Saved to annotated/  – skipping to next file."
+                f"Marked as too hard – all boundaries set to NaN. Saved {copied_snippet.name}, {out_ann_npy.name}, and {out_png.name} to {out_dir}  – skipping to next file."
             )
         else:
             self._status.showMessage("No data loaded – cannot mark as too hard.")
@@ -531,24 +561,6 @@ class MainWindow(QMainWindow):
             )
             return
         self._combo_files.setCurrentIndex(current_idx + 1)
-
-    def _on_add_nan_window(self):
-        self._viewer.add_nan_window()
-
-    def _on_remove_nan_window(self):
-        self._viewer.remove_last_nan_window()
-
-    def _on_clear_nan_windows(self):
-        self._viewer.clear_nan_windows()
-        self._viewer.nan_windows_changed.emit()
-
-    def _on_nan_windows_changed(self):
-        n = len(self._viewer.nan_windows)
-        self._btn_remove_nan.setEnabled(n > 0)
-        self._btn_clear_nan.setEnabled(n > 0)
-        self._lbl_nan_info.setText(f"{n} NaN window(s)" if n else "")
-        # Redraw active curves with updated NaN gaps
-        self._redraw_curves()
 
     def _redraw_curves(self):
         """Re-render spline/refined overlays respecting current NaN mask."""
@@ -575,9 +587,6 @@ class MainWindow(QMainWindow):
         self._btn_refine.setEnabled(False)
         self._btn_reset_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
-        self._btn_remove_nan.setEnabled(False)
-        self._btn_clear_nan.setEnabled(False)
-        self._lbl_nan_info.setText("")
         self._status.showMessage("Seeds cleared.")
 
     def keyPressEvent(self, event):

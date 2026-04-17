@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 from oct_annotator.engine import to_preview_uint8
 
 
-SEED_RADIUS = 2
+SEED_RADIUS = 0.5
 SEED_HITBOX_RADIUS_PX = 12
 SEED_COLOR = QColor(255, 50, 50, 140)
 SPLINE_COLOR = QColor(0, 255, 100, 110)
@@ -198,9 +198,9 @@ class MScanViewer(QGraphicsView):
         self._spline_path_items = [self._add_curve(y_indices, self._spline_color, 1.5, nan_mask)]
 
     def draw_refined(self, y_indices: NDArray, nan_mask: NDArray[np.bool_] | None = None) -> None:
-        """Overlay a refined boundary curve on the image, with gaps for NaN regions."""
+        """Overlay a refined boundary as transparent per-column point markers."""
         self._clear_path_items(self._refined_path_items)
-        self._refined_path_items = [self._add_curve(y_indices, self._refined_color, 2.5, nan_mask)]
+        self._refined_path_items = [self._add_points(y_indices, self._refined_color, 2.5, nan_mask)]
 
     def draw_spline_classified(
         self,
@@ -221,11 +221,11 @@ class MScanViewer(QGraphicsView):
         class_by_column: NDArray[np.int32],
         nan_mask: NDArray[np.bool_] | None = None,
     ) -> None:
-        """Overlay a refined curve with per-class colors along x."""
+        """Overlay a refined boundary with per-class transparent point markers."""
         self._clear_path_items(self._refined_path_items)
         items: List[QGraphicsPathItem] = []
         for class_id, color in _CLASS_CURVE_COLORS.items():
-            items.append(self._add_curve_for_class(y_indices, class_by_column, class_id, color, 2.5, nan_mask))
+            items.append(self._add_points_for_class(y_indices, class_by_column, class_id, color, 2.5, nan_mask))
         self._refined_path_items = items
 
     def set_annotation_colors(self, spline_color: QColor, refined_color: QColor | None = None) -> None:
@@ -397,12 +397,14 @@ class MScanViewer(QGraphicsView):
                     return
                 self._seeds.append((x, y, self._current_seed_class))
                 seed_color = _CLASS_CURVE_COLORS.get(self._current_seed_class, SEED_COLOR)
+                pen = QPen(seed_color, 1)
+                pen.setCosmetic(True)
                 item = self._scene.addEllipse(
                     x - SEED_RADIUS,
                     y - SEED_RADIUS,
                     SEED_RADIUS * 2,
                     SEED_RADIUS * 2,
-                    QPen(seed_color),
+                    pen,
                     QBrush(seed_color),
                 )
                 self._seed_items.append(item)
@@ -487,6 +489,48 @@ class MScanViewer(QGraphicsView):
         pen = QPen(color, width)
         pen.setCosmetic(True)
         return self._scene.addPath(path, pen)
+
+    def _add_points(
+        self,
+        y_indices: NDArray,
+        color: QColor,
+        size: float,
+        nan_mask: NDArray[np.bool_] | None = None,
+    ) -> QGraphicsPathItem:
+        path = QPainterPath()
+        point_color = QColor(color)
+        point_color.setAlpha(min(point_color.alpha(), 100))
+        for x in range(len(y_indices)):
+            if nan_mask is not None and nan_mask[x]:
+                continue
+            y = float(y_indices[x])
+            path.addRect(float(x), y, 1.0, 1.0)
+        pen = QPen(point_color, 0)
+        pen.setCosmetic(True)
+        return self._scene.addPath(path, pen, QBrush(point_color))
+
+    def _add_points_for_class(
+        self,
+        y_indices: NDArray,
+        class_by_column: NDArray[np.int32],
+        class_id: int,
+        color: QColor,
+        size: float,
+        nan_mask: NDArray[np.bool_] | None = None,
+    ) -> QGraphicsPathItem:
+        path = QPainterPath()
+        point_color = QColor(color)
+        point_color.setAlpha(min(point_color.alpha(), 100))
+        for x in range(len(y_indices)):
+            if nan_mask is not None and nan_mask[x]:
+                continue
+            if int(class_by_column[x]) != class_id:
+                continue
+            y = float(y_indices[x])
+            path.addRect(float(x), y, 1.0, 1.0)
+        pen = QPen(point_color, 0)
+        pen.setCosmetic(True)
+        return self._scene.addPath(path, pen, QBrush(point_color))
 
     def _find_seed_index_near_view_pos(self, view_x: float, view_y: float) -> int | None:
         """Return the nearest seed index within the on-screen hitbox, if any."""
