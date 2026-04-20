@@ -67,6 +67,7 @@ def fit_spline(
 def refine_boundary(
     m_scan: NDArray,
     spline_indices: NDArray[np.int64],
+    fixed_mask: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.uint16]:
     """Snap spline indices to a strong first-layer vertical gradient.
 
@@ -81,6 +82,8 @@ def refine_boundary(
     ----------
     m_scan         : 2-D array (rows × columns), the M-scan image.
     spline_indices : int array (columns,), one row-index per A-scan.
+    fixed_mask     : optional bool array (columns,); True columns stay on the
+                     spline and are not moved by fine-tuning.
 
     Returns
     -------
@@ -152,6 +155,13 @@ def refine_boundary(
     min_allowed = np.clip(spline_indices.astype(np.int64) - delta, 0, rows - 1)
     max_allowed = np.clip(spline_indices.astype(np.int64) + delta, 0, rows - 1)
     refined = np.clip(refined, min_allowed, max_allowed)
+
+    if fixed_mask is not None:
+        fixed_mask_arr = np.asarray(fixed_mask, dtype=np.bool_)
+        if fixed_mask_arr.shape != refined.shape:
+            raise ValueError("fixed_mask must have the same shape as spline_indices")
+        refined = refined.copy()
+        refined[fixed_mask_arr] = spline_indices.astype(np.int64, copy=False)[fixed_mask_arr]
 
     return refined.astype(np.uint16)
 

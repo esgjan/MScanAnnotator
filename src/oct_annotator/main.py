@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self._spline_indices: NDArray | None = None
         self._refined_indices: NDArray | None = None
         self._active_class: int = 1
+        self._fixed_spline_mode: bool = False
         self._output_root_directory: Path = DEFAULT_OUTPUT_DIRECTORY
 
         self._build_ui()
@@ -156,6 +157,14 @@ class MainWindow(QMainWindow):
         self._btn_clear = QPushButton("Clear Seeds")
         toolbar.addWidget(self._btn_clear)
 
+        self._btn_fixed_splines = QPushButton("Fixed Splines")
+        self._btn_fixed_splines.setCheckable(True)
+        self._btn_fixed_splines.setShortcut("S")
+        self._btn_fixed_splines.setToolTip(
+            "Seeds placed while enabled keep their spline regions fixed during fine-tuning (S)."
+        )
+        toolbar.addWidget(self._btn_fixed_splines)
+
         self._lbl_class = QLabel("")
         self._lbl_class.setMinimumWidth(160)
         toolbar.addWidget(self._lbl_class)
@@ -222,6 +231,7 @@ class MainWindow(QMainWindow):
         self._btn_save.clicked.connect(self._on_save)
         self._btn_flag.clicked.connect(self._on_flag_too_hard)
         self._btn_clear.clicked.connect(self._on_clear)
+        self._btn_fixed_splines.toggled.connect(self._on_toggle_fixed_splines)
         self._btn_zoom_fit.clicked.connect(self._viewer.zoom_fit)
         self._viewer.seeds_changed.connect(self._on_seeds_changed)
         self._spin_repeat.valueChanged.connect(self._on_repeat_changed)
@@ -315,6 +325,13 @@ class MainWindow(QMainWindow):
             self._btn_reset_refine.setEnabled(False)
             self._apply_display_data()
 
+    def _on_toggle_fixed_splines(self, enabled: bool) -> None:
+        self._fixed_spline_mode = bool(enabled)
+        self._viewer.set_current_seed_fixed(enabled)
+        self._status.showMessage(
+            "Fixed spline mode enabled." if enabled else "Fixed spline mode disabled."
+        )
+
     def _apply_display_data(self) -> None:
         """Tile the current M-scan N times and refresh the viewer."""
         if self._current_data is None:
@@ -376,13 +393,16 @@ class MainWindow(QMainWindow):
             if self._current_display_data is not None
             else self._current_data
         )
-        self._refined_indices = refine_boundary(
-            display_data, self._spline_indices
-        )
         width = self._viewer.image_width
+        fixed_mask = self._build_fixed_spline_mask(width)
+        self._refined_indices = refine_boundary(
+            display_data,
+            self._spline_indices,
+            fixed_mask=fixed_mask,
+        )
         nan_mask = self._viewer.get_nan_column_mask(width)
         class_map = self._build_class_map(width)
-        self._viewer.draw_refined_classified(self._refined_indices, class_map, nan_mask)
+        self._viewer.draw_refined_classified(self._refined_indices, class_map, nan_mask, fixed_mask)
         self._btn_save.setEnabled(True)
         self._btn_reset_refine.setEnabled(True)
         self._status.showMessage("Boundary refined via gradient snap. Press Save to export.")
@@ -567,6 +587,7 @@ class MainWindow(QMainWindow):
         width = self._viewer.image_width
         nan_mask = self._viewer.get_nan_column_mask(width) if width > 0 else None
         class_map = self._build_class_map(width) if width > 0 else None
+        fixed_mask = self._build_fixed_spline_mask(width) if width > 0 else None
         if self._spline_indices is not None:
             if class_map is not None:
                 self._viewer.draw_spline_classified(self._spline_indices, class_map, nan_mask)
@@ -574,9 +595,9 @@ class MainWindow(QMainWindow):
                 self._viewer.draw_spline(self._spline_indices, nan_mask)
         if self._refined_indices is not None:
             if class_map is not None:
-                self._viewer.draw_refined_classified(self._refined_indices, class_map, nan_mask)
+                self._viewer.draw_refined_classified(self._refined_indices, class_map, nan_mask, fixed_mask)
             else:
-                self._viewer.draw_refined(self._refined_indices, nan_mask)
+                self._viewer.draw_refined(self._refined_indices, nan_mask, fixed_mask)
 
     def _on_clear(self):
         self._viewer.clear_seeds()
@@ -649,6 +670,29 @@ class MainWindow(QMainWindow):
         region_idx = np.clip(np.searchsorted(xs, x_grid, side="right"), 0, len(cls) - 1)
         class_map[:] = cls[region_idx]
         return class_map
+
+    def _build_fixed_spline_mask(self, width: int) -> NDArray[np.bool_]:
+        """Build a per-column mask for spline regions locked against fine-tuning."""
+        fixed_mask = np.zeros(width, dtype=np.bool_)
+        seeds = self._viewer.seeds
+        fixed_flags = self._viewer.seed_fixed_flags
+        if not seeds or not fixed_flags:
+            return fixed_mask
+
+        xs = np.array([s[0] for s in seeds], dtype=np.float64)
+        fixed = np.array(fixed_flags, dtype=np.bool_)
+        order = np.argsort(xs)
+        xs = xs[order]
+        fixed = fixed[order]
+
+        if len(xs) == 1:
+            fixed_mask[:] = bool(fixed[0])
+            return fixed_mask
+
+        x_grid = np.arange(width, dtype=np.float64)
+        region_idx = np.clip(np.searchsorted(xs, x_grid, side="right"), 0, len(fixed) - 1)
+        fixed_mask[:] = fixed[region_idx]
+        return fixed_mask
 
 
 def run_app():

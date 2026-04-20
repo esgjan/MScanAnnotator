@@ -119,10 +119,11 @@ class MScanViewer(QGraphicsView):
         self._pixmap_item = None
         self._image_shape: Tuple[int, int] | None = None  # (rows, cols)
 
-        # Seed points as (x, y, class_id) image coordinates
-        self._seeds: List[Tuple[float, float, int]] = []
+        # Seed points as (x, y, class_id, fixed_spline) image coordinates.
+        self._seeds: List[Tuple[float, float, int, bool]] = []
         self._seed_items: List[QGraphicsEllipseItem] = []
         self._current_seed_class: int = 1
+        self._current_seed_fixed: bool = False
 
         # Curve overlays
         self._spline_path_items: List[QGraphicsPathItem] = []
@@ -171,14 +172,21 @@ class MScanViewer(QGraphicsView):
 
     @property
     def seeds(self) -> List[Tuple[float, float]]:
-        return [(x, y) for x, y, _ in self._seeds]
+        return [(x, y) for x, y, _, _ in self._seeds]
 
     @property
     def seed_classes(self) -> List[int]:
-        return [cls for _, _, cls in self._seeds]
+        return [cls for _, _, cls, _ in self._seeds]
+
+    @property
+    def seed_fixed_flags(self) -> List[bool]:
+        return [fixed for _, _, _, fixed in self._seeds]
 
     def set_current_seed_class(self, class_id: int) -> None:
         self._current_seed_class = int(class_id)
+
+    def set_current_seed_fixed(self, is_fixed: bool) -> None:
+        self._current_seed_fixed = bool(is_fixed)
 
     @property
     def image_width(self) -> int:
@@ -197,10 +205,18 @@ class MScanViewer(QGraphicsView):
         self._clear_path_items(self._spline_path_items)
         self._spline_path_items = [self._add_curve(y_indices, self._spline_color, 1.5, nan_mask)]
 
-    def draw_refined(self, y_indices: NDArray, nan_mask: NDArray[np.bool_] | None = None) -> None:
+    def draw_refined(
+        self,
+        y_indices: NDArray,
+        nan_mask: NDArray[np.bool_] | None = None,
+        fixed_mask: NDArray[np.bool_] | None = None,
+    ) -> None:
         """Overlay a refined boundary as transparent per-column point markers."""
         self._clear_path_items(self._refined_path_items)
-        self._refined_path_items = [self._add_points(y_indices, self._refined_color, 2.5, nan_mask)]
+        self._refined_path_items = [
+            self._add_points(y_indices, self._refined_color, 2.5, nan_mask, fixed_mask),
+            self._add_crosses(y_indices, self._refined_color, nan_mask, fixed_mask),
+        ]
 
     def draw_spline_classified(
         self,
@@ -220,12 +236,33 @@ class MScanViewer(QGraphicsView):
         y_indices: NDArray,
         class_by_column: NDArray[np.int32],
         nan_mask: NDArray[np.bool_] | None = None,
+        fixed_mask: NDArray[np.bool_] | None = None,
     ) -> None:
         """Overlay a refined boundary with per-class transparent point markers."""
         self._clear_path_items(self._refined_path_items)
         items: List[QGraphicsPathItem] = []
         for class_id, color in _CLASS_CURVE_COLORS.items():
-            items.append(self._add_points_for_class(y_indices, class_by_column, class_id, color, 2.5, nan_mask))
+            items.append(
+                self._add_points_for_class(
+                    y_indices,
+                    class_by_column,
+                    class_id,
+                    color,
+                    2.5,
+                    nan_mask,
+                    fixed_mask,
+                )
+            )
+            items.append(
+                self._add_crosses_for_class(
+                    y_indices,
+                    class_by_column,
+                    class_id,
+                    color,
+                    nan_mask,
+                    fixed_mask,
+                )
+            )
         self._refined_path_items = items
 
     def set_annotation_colors(self, spline_color: QColor, refined_color: QColor | None = None) -> None:
@@ -393,9 +430,9 @@ class MScanViewer(QGraphicsView):
             rows, cols = self._image_shape
             if 0 <= x < cols and 0 <= y < rows:
                 x_col = int(round(x))
-                if any(int(round(seed_x)) == x_col for seed_x, _, _ in self._seeds):
+                if any(int(round(seed_x)) == x_col for seed_x, _, _, _ in self._seeds):
                     return
-                self._seeds.append((x, y, self._current_seed_class))
+                self._seeds.append((x, y, self._current_seed_class, self._current_seed_fixed))
                 seed_color = _CLASS_CURVE_COLORS.get(self._current_seed_class, SEED_COLOR)
                 pen = QPen(seed_color, 1)
                 pen.setCosmetic(True)
@@ -496,12 +533,15 @@ class MScanViewer(QGraphicsView):
         color: QColor,
         size: float,
         nan_mask: NDArray[np.bool_] | None = None,
+        fixed_mask: NDArray[np.bool_] | None = None,
     ) -> QGraphicsPathItem:
         path = QPainterPath()
         point_color = QColor(color)
         point_color.setAlpha(min(point_color.alpha(), 100))
         for x in range(len(y_indices)):
             if nan_mask is not None and nan_mask[x]:
+                continue
+            if fixed_mask is not None and fixed_mask[x]:
                 continue
             y = float(y_indices[x])
             path.addRect(float(x), y, 1.0, 1.0)
@@ -517,6 +557,7 @@ class MScanViewer(QGraphicsView):
         color: QColor,
         size: float,
         nan_mask: NDArray[np.bool_] | None = None,
+        fixed_mask: NDArray[np.bool_] | None = None,
     ) -> QGraphicsPathItem:
         path = QPainterPath()
         point_color = QColor(color)
@@ -526,11 +567,67 @@ class MScanViewer(QGraphicsView):
                 continue
             if int(class_by_column[x]) != class_id:
                 continue
+            if fixed_mask is not None and fixed_mask[x]:
+                continue
             y = float(y_indices[x])
             path.addRect(float(x), y, 1.0, 1.0)
         pen = QPen(point_color, 0)
         pen.setCosmetic(True)
         return self._scene.addPath(path, pen, QBrush(point_color))
+
+    def _add_crosses(
+        self,
+        y_indices: NDArray,
+        color: QColor,
+        nan_mask: NDArray[np.bool_] | None = None,
+        fixed_mask: NDArray[np.bool_] | None = None,
+    ) -> QGraphicsPathItem:
+        path = QPainterPath()
+        cross_color = QColor(color)
+        cross_color.setAlpha(min(cross_color.alpha(), 160))
+        if fixed_mask is not None:
+            for x in range(len(y_indices)):
+                if nan_mask is not None and nan_mask[x]:
+                    continue
+                if not fixed_mask[x]:
+                    continue
+                y = float(y_indices[x])
+                path.moveTo(float(x), y)
+                path.lineTo(float(x) + 1.0, y + 1.0)
+                path.moveTo(float(x) + 1.0, y)
+                path.lineTo(float(x), y + 1.0)
+        pen = QPen(cross_color, 1)
+        pen.setCosmetic(True)
+        return self._scene.addPath(path, pen)
+
+    def _add_crosses_for_class(
+        self,
+        y_indices: NDArray,
+        class_by_column: NDArray[np.int32],
+        class_id: int,
+        color: QColor,
+        nan_mask: NDArray[np.bool_] | None = None,
+        fixed_mask: NDArray[np.bool_] | None = None,
+    ) -> QGraphicsPathItem:
+        path = QPainterPath()
+        cross_color = QColor(color)
+        cross_color.setAlpha(min(cross_color.alpha(), 160))
+        if fixed_mask is not None:
+            for x in range(len(y_indices)):
+                if nan_mask is not None and nan_mask[x]:
+                    continue
+                if int(class_by_column[x]) != class_id:
+                    continue
+                if not fixed_mask[x]:
+                    continue
+                y = float(y_indices[x])
+                path.moveTo(float(x), y)
+                path.lineTo(float(x) + 1.0, y + 1.0)
+                path.moveTo(float(x) + 1.0, y)
+                path.lineTo(float(x), y + 1.0)
+        pen = QPen(cross_color, 1)
+        pen.setCosmetic(True)
+        return self._scene.addPath(path, pen)
 
     def _find_seed_index_near_view_pos(self, view_x: float, view_y: float) -> int | None:
         """Return the nearest seed index within the on-screen hitbox, if any."""
@@ -538,7 +635,7 @@ class MScanViewer(QGraphicsView):
             return None
         best_idx = None
         best_dist2 = float("inf")
-        for i, (seed_x, seed_y, _) in enumerate(self._seeds):
+        for i, (seed_x, seed_y, _, _) in enumerate(self._seeds):
             vp = self.mapFromScene(QPointF(seed_x, seed_y))
             dx = float(vp.x()) - view_x
             dy = float(vp.y()) - view_y

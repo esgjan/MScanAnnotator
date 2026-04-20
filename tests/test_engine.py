@@ -178,6 +178,20 @@ class TestRefineBoundary:
 
         assert np.max(np.abs(refined.astype(np.int32) - spline)) <= 5
 
+    def test_fixed_mask_keeps_spline_columns_unchanged(self):
+        """Columns marked fixed must stay exactly on the spline."""
+        rows, cols = 100, 40
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+        m_scan[50:, :] = 1.0
+        spline = np.full(cols, 54, dtype=np.int64)
+        fixed_mask = np.zeros(cols, dtype=np.bool_)
+        fixed_mask[10:20] = True
+
+        refined = refine_boundary(m_scan, spline, fixed_mask=fixed_mask)
+
+        assert np.all(refined[fixed_mask] == spline[fixed_mask])
+        assert np.all(refined[~fixed_mask] == 49)
+
 
 # ---------------------------------------------------------------------------
 # Integration test – mock file round-trip
