@@ -192,6 +192,24 @@ class TestRefineBoundary:
         assert np.all(refined[fixed_mask] == spline[fixed_mask])
         assert np.all(refined[~fixed_mask] == 49)
 
+    def test_search_radius_limits_refinement_band(self):
+        """Configured search radius must bound the local motion around the spline."""
+        rows, cols = 100, 40
+        m_scan = np.zeros((rows, cols), dtype=np.float64)
+        m_scan[50:, :] = 1.0
+        spline = np.full(cols, 54, dtype=np.int64)
+
+        refined = refine_boundary(m_scan, spline, search_radius=2)
+
+        assert np.all(refined == 54)
+
+    def test_rejects_negative_search_radius(self):
+        m_scan = np.random.rand(16, 16).astype(np.float64)
+        spline = np.full(16, 8, dtype=np.int64)
+
+        with pytest.raises(ValueError, match="search_radius"):
+            refine_boundary(m_scan, spline, search_radius=-1)
+
 
 # ---------------------------------------------------------------------------
 # Integration test – mock file round-trip

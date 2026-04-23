@@ -67,6 +67,7 @@ def fit_spline(
 def refine_boundary(
     m_scan: NDArray,
     spline_indices: NDArray[np.int64],
+    search_radius: int = _REFINE_DELTA,
     fixed_mask: NDArray[np.bool_] | None = None,
 ) -> NDArray[np.uint16]:
     """Snap spline indices to a strong first-layer vertical gradient.
@@ -82,6 +83,8 @@ def refine_boundary(
     ----------
     m_scan         : 2-D array (rows × columns), the M-scan image.
     spline_indices : int array (columns,), one row-index per A-scan.
+    search_radius  : maximum number of rows above/below the spline that
+                     fine-tuning may search and move.
     fixed_mask     : optional bool array (columns,); True columns stay on the
                      spline and are not moved by fine-tuning.
 
@@ -90,7 +93,9 @@ def refine_boundary(
     refined : uint16 array (columns,), refined row indices.
     """
     rows, cols = m_scan.shape
-    delta = _REFINE_DELTA
+    delta = int(search_radius)
+    if delta < 0:
+        raise ValueError("search_radius must be non-negative")
     disp = normalized_preview_float(m_scan)
 
     # First layer is usually a dark-to-bright transition, so keep positive

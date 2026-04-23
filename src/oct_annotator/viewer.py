@@ -28,10 +28,11 @@ SEED_HITBOX_RADIUS_PX = 12
 SEED_COLOR = QColor(255, 50, 50, 140)
 SPLINE_COLOR = QColor(0, 255, 100, 110)
 REFINED_COLOR = QColor(0, 180, 60, 200)
-_CLASS_CURVE_COLORS: dict[int, QColor] = {
+_DEFAULT_CLASS_COLORS: dict[int, QColor] = {
     1: QColor(0, 190, 90, 220),
-    2: QColor(230, 190, 0, 220),
-    3: QColor(210, 40, 40, 220),
+    2: QColor(0, 200, 220, 220),
+    3: QColor(255, 165, 50, 220),
+    4: QColor(210, 40, 40, 220),
 }
 # Palette of (fill, edge) colors cycled across successive NaN windows
 _NAN_PALETTE: list[tuple[QColor, QColor]] = [
@@ -130,6 +131,9 @@ class MScanViewer(QGraphicsView):
         self._refined_path_items: List[QGraphicsPathItem] = []
         self._spline_color: QColor = QColor(SPLINE_COLOR)
         self._refined_color: QColor = QColor(REFINED_COLOR)
+        self._class_colors: dict[int, QColor] = {
+            class_id: QColor(color) for class_id, color in _DEFAULT_CLASS_COLORS.items()
+        }
 
         # Pan state (both mouse buttons held)
         self._panning: bool = False
@@ -185,6 +189,11 @@ class MScanViewer(QGraphicsView):
     def set_current_seed_class(self, class_id: int) -> None:
         self._current_seed_class = int(class_id)
 
+    def set_class_colors(self, class_colors: dict[int, QColor]) -> None:
+        self._class_colors = {
+            int(class_id): QColor(color) for class_id, color in class_colors.items()
+        }
+
     def set_current_seed_fixed(self, is_fixed: bool) -> None:
         self._current_seed_fixed = bool(is_fixed)
 
@@ -227,7 +236,7 @@ class MScanViewer(QGraphicsView):
         """Overlay a spline curve with per-class colors along x."""
         self._clear_path_items(self._spline_path_items)
         items: List[QGraphicsPathItem] = []
-        for class_id, color in _CLASS_CURVE_COLORS.items():
+        for class_id, color in self._class_colors.items():
             items.append(self._add_curve_for_class(y_indices, class_by_column, class_id, color, 1.5, nan_mask))
         self._spline_path_items = items
 
@@ -241,7 +250,7 @@ class MScanViewer(QGraphicsView):
         """Overlay a refined boundary with per-class transparent point markers."""
         self._clear_path_items(self._refined_path_items)
         items: List[QGraphicsPathItem] = []
-        for class_id, color in _CLASS_CURVE_COLORS.items():
+        for class_id, color in self._class_colors.items():
             items.append(
                 self._add_points_for_class(
                     y_indices,
@@ -433,7 +442,7 @@ class MScanViewer(QGraphicsView):
                 if any(int(round(seed_x)) == x_col for seed_x, _, _, _ in self._seeds):
                     return
                 self._seeds.append((x, y, self._current_seed_class, self._current_seed_fixed))
-                seed_color = _CLASS_CURVE_COLORS.get(self._current_seed_class, SEED_COLOR)
+                seed_color = self._class_colors.get(self._current_seed_class, SEED_COLOR)
                 pen = QPen(seed_color, 1)
                 pen.setCosmetic(True)
                 item = self._scene.addEllipse(
