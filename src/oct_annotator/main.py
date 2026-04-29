@@ -10,7 +10,7 @@ from typing import List
 
 import numpy as np
 from numpy.typing import NDArray
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QColor, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QFileDialog,
     QComboBox,
+    QDoubleSpinBox,
     QLineEdit,
     QSpinBox,
     QStatusBar,
@@ -36,13 +37,15 @@ if __package__ in (None, ""):
         sys.path.insert(0, package_root_str)
 
 from oct_annotator.viewer import MScanViewer
-from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png
+from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_tiff
 
 # Sentinel value written into uint16 annotations for NaN / excluded columns
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
 DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy_raw_snippets")
 DEFAULT_OUTPUT_DIRECTORY = Path(r"C:\Users\ZOJESSIG\Desktop\Diest_1704")
 DEFAULT_FINE_TUNE_RADIUS = 5
+DEFAULT_PREVIEW_CONTRAST = 1.0
+DEFAULT_PREVIEW_GAMMA = 1.0
 
 # class_id -> (name, UI color, PNG RGB color, label-mask value)
 _CLASS_STYLE: dict[int, tuple[str, QColor, tuple[int, int, int], float]] = {
@@ -58,6 +61,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OCT M-Scan Annotator")
         self.resize(1200, 700)
+        self._settings = QSettings("MScanAnnotator", "oct-annotator")
 
         # State
         self._npy_files: List[Path] = []
@@ -66,8 +70,19 @@ class MainWindow(QMainWindow):
         self._refined_indices: NDArray | None = None
         self._active_class: int = 1
         self._fixed_spline_mode: bool = False
-        self._fine_tune_radius: int = DEFAULT_FINE_TUNE_RADIUS
+        self._fine_tune_radius: int = int(
+            self._settings.value("preview/fine_tune_radius", DEFAULT_FINE_TUNE_RADIUS, type=int)
+        )
+        self._preview_contrast: float = float(
+            self._settings.value("preview/contrast", DEFAULT_PREVIEW_CONTRAST, type=float)
+        )
+        self._preview_gamma: float = float(
+            self._settings.value("preview/gamma", DEFAULT_PREVIEW_GAMMA, type=float)
+        )
         self._output_root_directory: Path = DEFAULT_OUTPUT_DIRECTORY
+        saved_output_dir = self._settings.value("paths/output_root", str(DEFAULT_OUTPUT_DIRECTORY), type=str)
+        if saved_output_dir:
+            self._output_root_directory = Path(saved_output_dir)
 
         self._build_ui()
         self._connect_signals()
@@ -206,8 +221,34 @@ class MainWindow(QMainWindow):
         toolbar2.addWidget(self._spin_fine_tune_radius)
         toolbar2.addWidget(QLabel("px"))
 
+        toolbar2.addWidget(QLabel("Preview contrast:"))
+        self._spin_preview_contrast = QDoubleSpinBox()
+        self._spin_preview_contrast.setDecimals(2)
+        self._spin_preview_contrast.setMinimum(0.10)
+        self._spin_preview_contrast.setMaximum(4.00)
+        self._spin_preview_contrast.setSingleStep(0.10)
+        self._spin_preview_contrast.setValue(self._preview_contrast)
+        self._spin_preview_contrast.setToolTip(
+            "Adjust preview/export contrast live. 1.0 keeps the default display contrast."
+        )
+        toolbar2.addWidget(self._spin_preview_contrast)
+
+        toolbar2.addWidget(QLabel("Gamma:"))
+        self._spin_preview_gamma = QDoubleSpinBox()
+        self._spin_preview_gamma.setDecimals(2)
+        self._spin_preview_gamma.setMinimum(0.10)
+        self._spin_preview_gamma.setMaximum(5.00)
+        self._spin_preview_gamma.setSingleStep(0.10)
+        self._spin_preview_gamma.setValue(self._preview_gamma)
+        self._spin_preview_gamma.setToolTip(
+            "Gamma correction: >1 brightens dark regions, <1 darkens them. 1.0 = no correction."
+        )
+        toolbar2.addWidget(self._spin_preview_gamma)
+
         # Viewer
         self._viewer = MScanViewer()
+        self._viewer.set_preview_contrast(self._preview_contrast)
+        self._viewer.set_preview_gamma(self._preview_gamma)
         self._viewer.set_class_colors(
             {class_id: color_qt for class_id, (_, color_qt, _, _) in _CLASS_STYLE.items()}
         )
@@ -237,6 +278,8 @@ class MainWindow(QMainWindow):
         self._btn_zoom_fit.clicked.connect(self._viewer.zoom_fit)
         self._viewer.seeds_changed.connect(self._on_seeds_changed)
         self._spin_fine_tune_radius.valueChanged.connect(self._on_fine_tune_radius_changed)
+        self._spin_preview_contrast.valueChanged.connect(self._on_preview_contrast_changed)
+        self._spin_preview_gamma.valueChanged.connect(self._on_preview_gamma_changed)
 
     # ---- Slots ---------------------------------------------------------
 
@@ -254,6 +297,7 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self._set_output_root_directory(Path(directory))
+            self._settings.setValue("paths/output_root", str(self._output_root_directory))
             self._status.showMessage(f"Save root set to {self._output_root_directory}")
 
     def _initial_open_directory(self) -> Path:
@@ -316,11 +360,30 @@ class MainWindow(QMainWindow):
 
     def _on_fine_tune_radius_changed(self, value: int) -> None:
         self._fine_tune_radius = int(value)
+        self._settings.setValue("preview/fine_tune_radius", self._fine_tune_radius)
         if self._spline_indices is not None:
             self._on_refine()
         elif self._current_data is not None:
             self._status.showMessage(
                 f"Fine-tune band set to +/-{self._fine_tune_radius} px."
+            )
+
+    def _on_preview_contrast_changed(self, value: float) -> None:
+        self._preview_contrast = float(value)
+        self._settings.setValue("preview/contrast", self._preview_contrast)
+        self._viewer.set_preview_contrast(self._preview_contrast)
+        if self._current_data is not None:
+            self._status.showMessage(
+                f"Contrast: {self._preview_contrast:.2f}  Gamma: {self._preview_gamma:.2f}  – TIFF exports will match."
+            )
+
+    def _on_preview_gamma_changed(self, value: float) -> None:
+        self._preview_gamma = float(value)
+        self._settings.setValue("preview/gamma", self._preview_gamma)
+        self._viewer.set_preview_gamma(self._preview_gamma)
+        if self._current_data is not None:
+            self._status.showMessage(
+                f"Contrast: {self._preview_contrast:.2f}  Gamma: {self._preview_gamma:.2f}  – TIFF exports will match."
             )
 
     def _on_toggle_fixed_splines(self, enabled: bool) -> None:
@@ -452,17 +515,19 @@ class MainWindow(QMainWindow):
         out_combined_npy = out_dir / (src_path.stem + "_annotations.npy")
         np.save(str(out_combined_npy), combined_data)
 
-        # Save .png visual overlay with class colors per seeded region.
-        out_png = out_dir / (src_path.stem + "_annotations.png")
+        # Save .tiff visual overlay with class colors per seeded region.
+        out_tiff = out_dir / (src_path.stem + "_annotations.tiff")
         png_class_colors = {
             class_id: rgb
             for class_id, (_, _, rgb, _) in _CLASS_STYLE.items()
         }
-        render_annotation_png(
+        render_annotation_tiff(
             m_scan,
             ann,
             nan_mask,
-            str(out_png),
+            str(out_tiff),
+            contrast=self._preview_contrast,
+            gamma=self._preview_gamma,
             class_by_column=class_map,
             class_colors=png_class_colors,
         )
@@ -470,7 +535,7 @@ class MainWindow(QMainWindow):
         n_nan = int(nan_mask.sum()) + int(class4_mask.sum())
         nan_note = f"  ({n_nan} cols NaN)" if n_nan else ""
         self._status.showMessage(
-            f"Saved \u2192 {out_dir}/{copied_snippet.name} + {out_combined_npy.name} + {out_png.name}  "
+            f"Saved \u2192 {out_dir}/{copied_snippet.name} + {out_combined_npy.name} + {out_tiff.name}  "
             f"(shape {combined_data.shape}){nan_note}"
         )
 
@@ -517,10 +582,17 @@ class MainWindow(QMainWindow):
             np.save(str(out_ann_npy), blank_ann.reshape(-1, 1))
 
             nan_mask = np.zeros(cols, dtype=np.bool_)
-            out_png = out_dir / (src_path.stem + "_annotations.png")
-            render_annotation_png(self._current_data, blank_ann, nan_mask, str(out_png))
+            out_tiff = out_dir / (src_path.stem + "_annotations.tiff")
+            render_annotation_tiff(
+                self._current_data,
+                blank_ann,
+                nan_mask,
+                str(out_tiff),
+                contrast=self._preview_contrast,
+                gamma=self._preview_gamma,
+            )
             self._status.showMessage(
-                f"Marked as too hard – all boundaries set to NaN. Saved {copied_snippet.name}, {out_ann_npy.name}, and {out_png.name} to {out_dir}  – skipping to next file."
+                f"Marked as too hard – all boundaries set to NaN. Saved {copied_snippet.name}, {out_ann_npy.name}, and {out_tiff.name} to {out_dir}  – skipping to next file."
             )
         else:
             self._status.showMessage("No data loaded – cannot mark as too hard.")

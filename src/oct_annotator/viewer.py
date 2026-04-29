@@ -119,6 +119,9 @@ class MScanViewer(QGraphicsView):
 
         self._pixmap_item = None
         self._image_shape: Tuple[int, int] | None = None  # (rows, cols)
+        self._image_data: NDArray | None = None
+        self._preview_contrast: float = 1.0
+        self._preview_gamma: float = 1.0
 
         # Seed points as (x, y, class_id, fixed_spline) image coordinates.
         self._seeds: List[Tuple[float, float, int, bool]] = []
@@ -154,12 +157,32 @@ class MScanViewer(QGraphicsView):
         self._pixmap_item = None
         self._spline_path_items = []
         self._refined_path_items = []
+        self._image_data = np.asarray(data)
 
         rows, cols = data.shape
         self._image_shape = (rows, cols)
 
-        # Match DB-analyzer preprocessing for preview contrast.
-        normed = to_preview_uint8(data)
+        self._update_pixmap()
+        self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def set_preview_contrast(self, contrast: float) -> None:
+        self._preview_contrast = float(contrast)
+        if self._image_data is not None:
+            self._update_pixmap()
+
+    def set_preview_gamma(self, gamma: float) -> None:
+        self._preview_gamma = float(gamma)
+        if self._image_data is not None:
+            self._update_pixmap()
+
+    def _update_pixmap(self) -> None:
+        if self._image_data is None or self._image_shape is None:
+            return
+
+        rows, cols = self._image_shape
+
+        # Match export preprocessing so live preview and saved overlay stay aligned.
+        normed = to_preview_uint8(self._image_data, contrast=self._preview_contrast, gamma=self._preview_gamma)
 
         qimage = QImage(
             normed.data.tobytes(),
@@ -169,10 +192,12 @@ class MScanViewer(QGraphicsView):
             QImage.Format.Format_Grayscale8,
         )
         pixmap = QPixmap.fromImage(qimage)
-        self._pixmap_item = self._scene.addPixmap(pixmap)
-        # Keep an explicit finite scene rect so view scrollbars stay responsive.
-        self._scene.setSceneRect(QRectF(0, 0, cols, rows))
-        self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+        if self._pixmap_item is None:
+            self._pixmap_item = self._scene.addPixmap(pixmap)
+            # Keep an explicit finite scene rect so view scrollbars stay responsive.
+            self._scene.setSceneRect(QRectF(0, 0, cols, rows))
+        else:
+            self._pixmap_item.setPixmap(pixmap)
 
     @property
     def seeds(self) -> List[Tuple[float, float]]:

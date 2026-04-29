@@ -5,10 +5,17 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
-from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_png, to_preview_uint8
+from oct_annotator.engine import (
+    fit_spline,
+    refine_boundary,
+    render_annotation_png,
+    render_annotation_tiff,
+    to_preview_uint8,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +325,33 @@ class TestRenderAnnotationPng:
         render_annotation_png(m_scan, ann, nan_mask, str(out))
 
         assert out.exists()
+
+
+class TestPreviewContrast:
+    def test_contrast_setting_changes_preview_pixels(self):
+        gradient = np.linspace(0.0, 4.0, 9, dtype=np.float64).reshape(1, -1)
+
+        low_contrast = to_preview_uint8(gradient, contrast=0.5)
+        high_contrast = to_preview_uint8(gradient, contrast=2.0)
+
+        assert high_contrast[0, 1] < low_contrast[0, 1]
+        assert high_contrast[0, -2] > low_contrast[0, -2]
+
+
+class TestRenderAnnotationTiff:
+    def test_tiff_is_created_and_readable(self, tmp_path: Path):
+        rows, cols = 100, 200
+        m_scan = np.random.rand(rows, cols).astype(np.float64)
+        ann = np.full(cols, 50, dtype=np.uint16)
+        nan_mask = np.zeros(cols, dtype=np.bool_)
+
+        out = tmp_path / "test_overlay.tiff"
+        render_annotation_tiff(m_scan, ann, nan_mask, str(out), contrast=1.8)
+
+        assert out.exists()
+        loaded = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)
+        assert loaded is not None
+        assert loaded.shape[:2] == (rows, cols)
         assert out.stat().st_size > 0
 
 

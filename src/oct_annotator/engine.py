@@ -11,6 +11,8 @@ import cv2
 
 _OCT_CLIP_MIN = 0.0
 _OCT_CLIP_MAX = 4.0
+_DEFAULT_PREVIEW_CONTRAST = 1.0
+_DEFAULT_PREVIEW_GAMMA = 1.0
 _REFINE_DELTA = 5
 _FIRST_LAYER_ABOVE_RELATIVE_THRESHOLD = 0.55
 _FIRST_LAYER_BELOW_RELATIVE_THRESHOLD = 0.85
@@ -178,47 +180,87 @@ def refine_boundary(
 _NAN_SENTINEL = np.uint16(65535)
 
 
-def to_preview_uint8(m_scan: NDArray) -> NDArray[np.uint8]:
-    """Convert raw OCT image to uint8 using the same pipeline as npy2png.py."""
-    bgra = db_equivalent_bgra_from_raw(m_scan)
+def _apply_preview_contrast(
+    normalized_img: NDArray[np.float32],
+    contrast: float = _DEFAULT_PREVIEW_CONTRAST,
+) -> NDArray[np.float32]:
+    """Apply a simple midpoint-preserving contrast adjustment in [0, 1]."""
+    contrast_value = max(0.05, float(contrast))
+    adjusted = (normalized_img - 0.5) * contrast_value + 0.5
+    return np.clip(adjusted, 0.0, 1.0)
+
+
+def _apply_preview_gamma(
+    img: NDArray[np.float32],
+    gamma: float = _DEFAULT_PREVIEW_GAMMA,
+) -> NDArray[np.float32]:
+    """Apply gamma correction in [0, 1]: output = input^(1/gamma).
+
+    gamma > 1.0 brightens dark regions; gamma < 1.0 darkens them.
+    gamma = 1.0 is a no-op.
+    """
+    gamma_value = max(0.05, float(gamma))
+    return np.power(np.clip(img, 0.0, 1.0), 1.0 / gamma_value).astype(np.float32)
+
+
+def to_preview_uint8(
+    m_scan: NDArray,
+    contrast: float = _DEFAULT_PREVIEW_CONTRAST,
+    gamma: float = _DEFAULT_PREVIEW_GAMMA,
+) -> NDArray[np.uint8]:
+    """Convert raw OCT image to uint8 using the same pipeline as saved overlays."""
+    bgra = db_equivalent_bgra_from_raw(m_scan, contrast=contrast, gamma=gamma)
     return bgra[:, :, 0]
 
 
-def normalized_preview_float(raw_img: NDArray) -> NDArray[np.float32]:
+def normalized_preview_float(
+    raw_img: NDArray,
+    contrast: float = _DEFAULT_PREVIEW_CONTRAST,
+    gamma: float = _DEFAULT_PREVIEW_GAMMA,
+) -> NDArray[np.float32]:
     """Return the clip+normalize display image as float32 in [0, 1]."""
     img = np.clip(raw_img.astype(np.float32, copy=False), _OCT_CLIP_MIN, _OCT_CLIP_MAX)
     vmin = float(img.min())
     vmax = float(img.max())
     if vmax > vmin:
-        return (img - vmin) / (vmax - vmin)
+        normalized = (img - vmin) / (vmax - vmin)
+        contrasted = _apply_preview_contrast(normalized, contrast=contrast)
+        return _apply_preview_gamma(contrasted, gamma=gamma)
     return np.zeros_like(img, dtype=np.float32)
 
 
-def db_equivalent_bgra_from_raw(raw_img: NDArray) -> NDArray[np.uint8]:
+def db_equivalent_bgra_from_raw(
+    raw_img: NDArray,
+    contrast: float = _DEFAULT_PREVIEW_CONTRAST,
+    gamma: float = _DEFAULT_PREVIEW_GAMMA,
+) -> NDArray[np.uint8]:
     """Exact clip/normalize/BGRA pipeline used by dataloader2/npy2png.py."""
-    disp = normalized_preview_float(raw_img)
+    disp = normalized_preview_float(raw_img, contrast=contrast, gamma=gamma)
     bgra = cv2.cvtColor(disp, cv2.COLOR_GRAY2BGRA)
     return (bgra * 255.0).astype(np.uint8)
 
 
-def render_annotation_png(
+def _render_annotation_image(
     m_scan: NDArray,
     annotation: NDArray[np.uint16],
     nan_mask: NDArray[np.bool_],
     out_path: str,
+    contrast: float = _DEFAULT_PREVIEW_CONTRAST,
+    gamma: float = _DEFAULT_PREVIEW_GAMMA,
     line_color: tuple = (0, 255, 100),
     class_by_column: NDArray[np.int32] | None = None,
     class_colors: dict[int, tuple[int, int, int]] | None = None,
     line_thickness: int = 2,
 ) -> None:
-    """Save a PNG showing the M-scan with only the final annotation boundary.
+    """Save an image showing the M-scan with only the final annotation boundary.
 
     Parameters
     ----------
     m_scan       : 2-D float array (rows x cols), the M-scan.
     annotation   : 1-D uint16 array (cols,); sentinel columns are skipped.
     nan_mask     : bool array (cols,); True = excluded column.
-    out_path     : file path for the output PNG.
+    out_path     : file path for the output image.
+    contrast     : preview/export contrast multiplier; 1.0 keeps neutral contrast.
     line_color   : RGB tuple for the boundary line (fallback/default).
     class_by_column : optional int array (cols,), class id per column.
     class_colors : optional mapping class_id -> RGB tuple.
@@ -226,8 +268,8 @@ def render_annotation_png(
     """
     rows, cols = m_scan.shape
 
-    # Use the exact same clip+normalize+BGR conversion as npy2png.py.
-    bgra = db_equivalent_bgra_from_raw(m_scan)
+    # Preview and export share the same clip/normalize/contrast/gamma pipeline.
+    bgra = db_equivalent_bgra_from_raw(m_scan, contrast=contrast, gamma=gamma)
 
     # Draw the boundary line (skip NaN columns)
     ann = annotation.reshape(-1)
@@ -251,4 +293,58 @@ def render_annotation_png(
 
     ok = cv2.imwrite(out_path, bgra)
     if not ok:
-        raise RuntimeError(f"Failed to write PNG: {out_path}")
+        raise RuntimeError(f"Failed to write image: {out_path}")
+
+
+def render_annotation_png(
+    m_scan: NDArray,
+    annotation: NDArray[np.uint16],
+    nan_mask: NDArray[np.bool_],
+    out_path: str,
+    contrast: float = _DEFAULT_PREVIEW_CONTRAST,
+    gamma: float = _DEFAULT_PREVIEW_GAMMA,
+    line_color: tuple = (0, 255, 100),
+    class_by_column: NDArray[np.int32] | None = None,
+    class_colors: dict[int, tuple[int, int, int]] | None = None,
+    line_thickness: int = 2,
+) -> None:
+    """Backward-compatible PNG export."""
+    _render_annotation_image(
+        m_scan,
+        annotation,
+        nan_mask,
+        out_path,
+        contrast=contrast,
+        gamma=gamma,
+        line_color=line_color,
+        class_by_column=class_by_column,
+        class_colors=class_colors,
+        line_thickness=line_thickness,
+    )
+
+
+def render_annotation_tiff(
+    m_scan: NDArray,
+    annotation: NDArray[np.uint16],
+    nan_mask: NDArray[np.bool_],
+    out_path: str,
+    contrast: float = _DEFAULT_PREVIEW_CONTRAST,
+    gamma: float = _DEFAULT_PREVIEW_GAMMA,
+    line_color: tuple = (0, 255, 100),
+    class_by_column: NDArray[np.int32] | None = None,
+    class_colors: dict[int, tuple[int, int, int]] | None = None,
+    line_thickness: int = 2,
+) -> None:
+    """Save a TIFF overlay using the same display contrast and gamma as the preview."""
+    _render_annotation_image(
+        m_scan,
+        annotation,
+        nan_mask,
+        out_path,
+        contrast=contrast,
+        gamma=gamma,
+        line_color=line_color,
+        class_by_column=class_by_column,
+        class_colors=class_colors,
+        line_thickness=line_thickness,
+    )
