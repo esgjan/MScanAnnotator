@@ -41,8 +41,6 @@ from oct_annotator.engine import fit_spline, refine_boundary, render_annotation_
 
 # Sentinel value written into uint16 annotations for NaN / excluded columns
 NAN_SENTINEL: np.uint16 = np.uint16(65535)
-DEFAULT_SCAN_DIRECTORY = Path(r"D:\iiOCT_data\npy_raw_snippets")
-DEFAULT_OUTPUT_DIRECTORY = Path(r"C:\Users\ZOJESSIG\Desktop\Diest_1704")
 DEFAULT_FINE_TUNE_RADIUS = 5
 DEFAULT_PREVIEW_CONTRAST = 1.0
 DEFAULT_PREVIEW_GAMMA = 1.0
@@ -79,8 +77,8 @@ class MainWindow(QMainWindow):
         self._preview_gamma: float = float(
             self._settings.value("preview/gamma", DEFAULT_PREVIEW_GAMMA, type=float)
         )
-        self._output_root_directory: Path = DEFAULT_OUTPUT_DIRECTORY
-        saved_output_dir = self._settings.value("paths/output_root", str(DEFAULT_OUTPUT_DIRECTORY), type=str)
+        self._output_root_directory: Path = Path.home()
+        saved_output_dir = self._settings.value("paths/output_root", "", type=str)
         if saved_output_dir:
             self._output_root_directory = Path(saved_output_dir)
 
@@ -117,15 +115,6 @@ class MainWindow(QMainWindow):
         self._output_root_directory = directory
         if hasattr(self, "_edit_output_dir"):
             self._edit_output_dir.setText(str(directory))
-
-    @staticmethod
-    def _annotation_output_dir(source_path: Path) -> Path:
-        return source_path.parent / "annotated"
-
-    @staticmethod
-    def _too_hard_output_dir(source_path: Path) -> Path:
-        # Keep flagged files alongside the current experiment folder.
-        return source_path.parent / "2hard2label"
 
     # ---- UI construction -----------------------------------------------
 
@@ -303,8 +292,6 @@ class MainWindow(QMainWindow):
     def _initial_open_directory(self) -> Path:
         if self._npy_files:
             return self._npy_files[0].parent
-        if DEFAULT_SCAN_DIRECTORY.exists():
-            return DEFAULT_SCAN_DIRECTORY
         return Path.home()
 
     def _load_directory(self, directory: str):
