@@ -124,7 +124,7 @@ On Windows, you can also double-click `start_oct_annotate.bat` from the project 
 5. **Fine-tune** — press `A` or click **Fine-tune** to refine the spline into a smooth boundary that follows the earliest plausible top-layer rim near the spline while staying within +/-5 pixels of it (darker green curve for refined vs. bright green for original spline)
 6. **Mark excluded regions** — add one or more NaN windows for columns that should export as the NaN sentinel value `65535`
 7. **Save** — press `D` or click **Save** to write:
-   - `<save_root>/<experiment>/<source_stem>_annotations.npy` — shape `(columns, 2)` where column 0 = boundary indices (float32) and column 1 = class labels (1.0, 2.0, 3.0, or NaN for class 4)
+   - `<save_root>/<experiment>/<source_stem>_annotations.npy` — shape `(columns, 2)` where column 0 = boundary indices (float32) and column 1 = class labels (1.0, 2.0, 3.0, 4.0, or `nan` for the red `nan` label and excluded columns)
    - `<save_root>/<experiment>/<source_stem>_annotations.tiff` — overlay with colored boundaries (dark green, cyan, orange, red) matching assigned classes
    - A copy of the source scan is placed alongside the annotation files
    
@@ -146,7 +146,7 @@ If the current folder is exhausted, the app attempts to open the next sibling ex
 
 - **Left-click** — place a seed point
 - **Right-click** — remove the last seed, or remove the clicked seed directly
-- **1 / 2 / 3 / 4** — set the classification for subsequently placed seeds (dark green / cyan / orange / red-NaN)
+- **1 / 2 / 3 / 4 / 5** — set the classification for subsequently placed seeds (green / yellow / orange / blue / red-nan)
 - **A** — fine-tune the boundary
 - **D** — save the annotation
 - **F** — mark as too hard (all-NaN)

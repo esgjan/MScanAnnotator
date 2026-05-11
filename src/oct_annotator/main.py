@@ -45,13 +45,20 @@ DEFAULT_FINE_TUNE_RADIUS = 5
 DEFAULT_PREVIEW_CONTRAST = 1.0
 DEFAULT_PREVIEW_GAMMA = 1.0
 
+NAN_LABEL_TEXT = "nan"
+
 # class_id -> (name, UI color, PNG RGB color, label-mask value)
 _CLASS_STYLE: dict[int, tuple[str, QColor, tuple[int, int, int], float]] = {
-    1: ("Class 1", QColor(0, 190, 90), (0, 190, 90), 1.0),  # Dark green
-    2: ("Class 2", QColor(0, 200, 220), (0, 200, 220), 2.0),  # Cyan
-    3: ("Class 3", QColor(255, 165, 50), (255, 165, 50), 3.0),  # Orange
-    4: ("Class 4", QColor(210, 40, 40), (210, 40, 40), float("nan")),  # Red (NaN)
+    1: ("Class 1", QColor(0, 190, 90), (0, 190, 90), 1.0),
+    2: ("Class 2", QColor(245, 205, 0), (245, 205, 0), 2.0),
+    3: ("Class 3", QColor(255, 165, 50), (255, 165, 50), 3.0),
+    4: ("Class 4", QColor(40, 120, 255), (40, 120, 255), 4.0),
+    5: (NAN_LABEL_TEXT, QColor(210, 40, 40), (210, 40, 40), float("nan")),
 }
+
+
+def _format_label_value(class_value: float) -> str:
+    return NAN_LABEL_TEXT if np.isnan(class_value) else str(int(class_value))
 
 
 class MainWindow(QMainWindow):
@@ -182,6 +189,12 @@ class MainWindow(QMainWindow):
         self._shortcut_class_3 = QShortcut(QKeySequence("3"), self)
         self._shortcut_class_3.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._shortcut_class_3.activated.connect(lambda: self._set_active_class(3))
+        self._shortcut_class_4 = QShortcut(QKeySequence("4"), self)
+        self._shortcut_class_4.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_class_4.activated.connect(lambda: self._set_active_class(4))
+        self._shortcut_class_5 = QShortcut(QKeySequence("5"), self)
+        self._shortcut_class_5.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._shortcut_class_5.activated.connect(lambda: self._set_active_class(5))
 
         # Second toolbar row — zoom & NaN windows
         toolbar2 = QHBoxLayout()
@@ -475,8 +488,8 @@ class MainWindow(QMainWindow):
             ann = ann_resized
 
         nan_mask = self._viewer.get_nan_column_mask(orig_cols)
-        class4_mask = class_map == 4
-        ann[class4_mask] = NAN_SENTINEL
+        class5_mask = class_map == 5
+        ann[class5_mask] = NAN_SENTINEL
         ann[nan_mask] = NAN_SENTINEL
 
         # Save class label mask .npy with per-region values from seed classes.
@@ -484,7 +497,8 @@ class MainWindow(QMainWindow):
         label_mask[class_map == 1] = 1.0
         label_mask[class_map == 2] = 2.0
         label_mask[class_map == 3] = 3.0
-        label_mask[class_map == 4] = np.nan
+        label_mask[class_map == 4] = 4.0
+        label_mask[class_map == 5] = np.nan
         label_mask[nan_mask] = np.nan
 
         # Combine annotations and labels into a single 2D array
@@ -519,8 +533,8 @@ class MainWindow(QMainWindow):
             class_colors=png_class_colors,
         )
 
-        n_nan = int(nan_mask.sum()) + int(class4_mask.sum())
-        nan_note = f"  ({n_nan} cols NaN)" if n_nan else ""
+        n_nan = int(nan_mask.sum()) + int(class5_mask.sum())
+        nan_note = f"  ({n_nan} cols {NAN_LABEL_TEXT})" if n_nan else ""
         self._status.showMessage(
             f"Saved \u2192 {out_dir}/{copied_snippet.name} + {out_combined_npy.name} + {out_tiff.name}  "
             f"(shape {combined_data.shape}){nan_note}"
@@ -643,6 +657,9 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key.Key_4:
             self._set_active_class(4)
             return
+        if event.key() == Qt.Key.Key_5:
+            self._set_active_class(5)
+            return
         super().keyPressEvent(event)
 
     def _set_active_class(self, cls: int) -> None:
@@ -651,12 +668,12 @@ class MainWindow(QMainWindow):
         self._active_class = cls
         self._apply_active_class_style()
         name, _, _, class_value = _CLASS_STYLE[cls]
-        value_text = "NaN" if np.isnan(class_value) else str(int(class_value))
+        value_text = _format_label_value(class_value)
         self._status.showMessage(f"Active label set to {name}. Saved label-mask value: {value_text}.")
 
     def _apply_active_class_style(self) -> None:
         name, color_qt, _, class_value = _CLASS_STYLE[self._active_class]
-        value_text = "NaN" if np.isnan(class_value) else str(int(class_value))
+        value_text = _format_label_value(class_value)
         self._lbl_class.setText(f"Active Seed Label: {name} -> {value_text}")
         self._lbl_class.setStyleSheet(f"color: {color_qt.name()}; font-weight: bold;")
         self._viewer.set_current_seed_class(self._active_class)

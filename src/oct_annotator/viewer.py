@@ -30,17 +30,18 @@ SPLINE_COLOR = QColor(0, 255, 100, 110)
 REFINED_COLOR = QColor(0, 180, 60, 200)
 _DEFAULT_CLASS_COLORS: dict[int, QColor] = {
     1: QColor(0, 190, 90, 220),
-    2: QColor(0, 200, 220, 220),
+    2: QColor(245, 205, 0, 220),
     3: QColor(255, 165, 50, 220),
-    4: QColor(210, 40, 40, 220),
+    4: QColor(40, 120, 255, 220),
+    5: QColor(210, 40, 40, 220),
 }
-# Palette of (fill, edge) colors cycled across successive NaN windows
+# Palette of (fill, edge) colors cycled across successive nan windows.
 _NAN_PALETTE: list[tuple[QColor, QColor]] = [
-    (QColor(220,   0, 255,  55), QColor(220,   0, 255, 210)),  # magenta
-    (QColor(  0, 210, 210,  55), QColor(  0, 210, 210, 210)),  # cyan
-    (QColor(230, 210,   0,  55), QColor(230, 210,   0, 210)),  # yellow
-    (QColor(255, 100,   0,  55), QColor(255, 100,   0, 210)),  # orange
-    (QColor(255,   0, 110,  55), QColor(255,   0, 110, 210)),  # hot-pink
+    (QColor(235,  60,  60,  55), QColor(235,  60,  60, 210)),
+    (QColor(220,  40,  40,  55), QColor(220,  40,  40, 210)),
+    (QColor(200,  30,  30,  55), QColor(200,  30,  30, 210)),
+    (QColor(185,  20,  20,  55), QColor(185,  20,  20, 210)),
+    (QColor(170,  10,  10,  55), QColor(170,  10,  10, 210)),
 ]
 
 
