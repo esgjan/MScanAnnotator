@@ -47,14 +47,22 @@ DEFAULT_PREVIEW_GAMMA = 1.0
 
 NAN_LABEL_TEXT = "nan"
 
-# class_id -> (name, UI color, PNG RGB color, label-mask value)
-_CLASS_STYLE: dict[int, tuple[str, QColor, tuple[int, int, int], float]] = {
-    1: ("Class 1", QColor(0, 190, 90), (0, 190, 90), 1.0),
-    2: ("Class 2", QColor(245, 205, 0), (245, 205, 0), 2.0),
-    3: ("Class 3", QColor(255, 165, 50), (255, 165, 50), 3.0),
-    4: ("Class 4", QColor(40, 120, 255), (40, 120, 255), 4.0),
-    5: (NAN_LABEL_TEXT, QColor(210, 40, 40), (210, 40, 40), float("nan")),
+# class_id -> (name, UI color, label-mask value)
+_CLASS_STYLE: dict[int, tuple[str, QColor, float]] = {
+    1: ("Class 1", QColor(0, 190, 90), 1.0),
+    2: ("Class 2", QColor(245, 205, 0), 2.0),
+    3: ("Class 3", QColor(255, 165, 50), 3.0),
+    4: ("Class 4", QColor(40, 120, 255), 4.0),
+    5: (NAN_LABEL_TEXT, QColor(210, 40, 40), float("nan")),
 }
+
+
+def _class_overlay_rgb_map() -> dict[int, tuple[int, int, int]]:
+    """Build export RGB colors from the same QColor values used by the UI."""
+    return {
+        class_id: (color_qt.red(), color_qt.green(), color_qt.blue())
+        for class_id, (_, color_qt, _) in _CLASS_STYLE.items()
+    }
 
 
 def _format_label_value(class_value: float) -> str:
@@ -70,11 +78,21 @@ class MainWindow(QMainWindow):
 
         # State
         self._npy_files: List[Path] = []
+        self._current_directory: Path | None = None
         self._current_data: NDArray | None = None
         self._spline_indices: NDArray | None = None
         self._refined_indices: NDArray | None = None
         self._active_class: int = 1
         self._fixed_spline_mode: bool = False
+        self._anchor_erase_mode: bool = False
+        self._fix_mode_enabled: bool = True
+        self._loaded_fix_spline_indices: NDArray | None = None
+        self._loaded_fix_class_map: NDArray[np.int32] | None = None
+        self._loaded_fix_anchor_xs: NDArray[np.float64] | None = None
+        self._loaded_fix_anchor_ys: NDArray[np.float64] | None = None
+        self._loaded_fix_fixed_mask: NDArray[np.bool_] | None = None
+        self._loaded_fix_annotation_path: Path | None = None
+        self._fix_mode_seeds_imported: bool = False
         self._fine_tune_radius: int = int(
             self._settings.value("preview/fine_tune_radius", DEFAULT_FINE_TUNE_RADIUS, type=int)
         )
@@ -116,7 +134,20 @@ class MainWindow(QMainWindow):
 
     def _output_dir_for_source(self, source_path: Path) -> Path:
         """Get output directory preserving source hierarchy under selected save root."""
-        return self._output_root_directory.joinpath(*self._experiment_output_parts(source_path))
+        out_dir = self._output_root_directory.joinpath(*self._experiment_output_parts(source_path))
+        return self._ensure_output_under_root(out_dir)
+
+    def _ensure_output_under_root(self, output_dir: Path) -> Path:
+        """Guarantee resolved output path stays within configured save root."""
+        root = self._output_root_directory.resolve()
+        resolved_out = output_dir.resolve()
+        try:
+            resolved_out.relative_to(root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Output path {resolved_out} is outside save root {root}."
+            ) from exc
+        return resolved_out
 
     def _set_output_root_directory(self, directory: Path) -> None:
         self._output_root_directory = directory
@@ -175,6 +206,21 @@ class MainWindow(QMainWindow):
             "Seeds placed while enabled keep their spline regions fixed during fine-tuning (S)."
         )
         toolbar.addWidget(self._btn_fixed_splines)
+
+        self._btn_anchor_erase = QPushButton("Remove Anchors (R)")
+        self._btn_anchor_erase.setCheckable(True)
+        self._btn_anchor_erase.setToolTip(
+            "When enabled in fix mode, left-click removes anchors in a 10 px radius."
+        )
+        toolbar.addWidget(self._btn_anchor_erase)
+
+        self._btn_fix_mode = QPushButton("Fix Mode")
+        self._btn_fix_mode.setCheckable(True)
+        self._btn_fix_mode.setChecked(True)
+        self._btn_fix_mode.setToolTip(
+            "Load existing *_annotations.npy as baseline anchors for fixing."
+        )
+        toolbar.addWidget(self._btn_fix_mode)
 
         self._lbl_class = QLabel("")
         self._lbl_class.setMinimumWidth(160)
@@ -252,7 +298,7 @@ class MainWindow(QMainWindow):
         self._viewer.set_preview_contrast(self._preview_contrast)
         self._viewer.set_preview_gamma(self._preview_gamma)
         self._viewer.set_class_colors(
-            {class_id: color_qt for class_id, (_, color_qt, _, _) in _CLASS_STYLE.items()}
+            {class_id: color_qt for class_id, (_, color_qt, _) in _CLASS_STYLE.items()}
         )
         root.addWidget(self._viewer, stretch=1)
 
@@ -277,6 +323,8 @@ class MainWindow(QMainWindow):
         self._btn_flag.clicked.connect(self._on_flag_too_hard)
         self._btn_clear.clicked.connect(self._on_clear)
         self._btn_fixed_splines.toggled.connect(self._on_toggle_fixed_splines)
+        self._btn_anchor_erase.toggled.connect(self._on_toggle_anchor_erase_mode)
+        self._btn_fix_mode.toggled.connect(self._on_toggle_fix_mode)
         self._btn_zoom_fit.clicked.connect(self._viewer.zoom_fit)
         self._viewer.seeds_changed.connect(self._on_seeds_changed)
         self._spin_fine_tune_radius.valueChanged.connect(self._on_fine_tune_radius_changed)
@@ -309,7 +357,9 @@ class MainWindow(QMainWindow):
 
     def _load_directory(self, directory: str):
         folder = Path(directory)
-        self._npy_files = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
+        self._current_directory = folder
+        candidates = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
+        self._npy_files = candidates
         self._combo_files.blockSignals(True)
         self._combo_files.clear()
         for f in self._npy_files:
@@ -356,6 +406,18 @@ class MainWindow(QMainWindow):
         self._btn_save.setEnabled(False)
 
         self._apply_display_data()
+        fix_message = self._load_fix_annotation_for_source(path)
+        self._sync_fix_mode_seeds()
+        if self._fix_mode_seeds_imported:
+            self._on_seeds_changed()
+            if fix_message is not None:
+                self._status.showMessage(fix_message)
+            self._apply_active_class_style()
+            return
+        if self._apply_loaded_fix_baseline():
+            self._status.showMessage(fix_message or f"Loaded {path.name}.")
+        elif fix_message is not None:
+            self._status.showMessage(fix_message)
         self._apply_active_class_style()
 
     def _on_fine_tune_radius_changed(self, value: int) -> None:
@@ -389,9 +451,190 @@ class MainWindow(QMainWindow):
     def _on_toggle_fixed_splines(self, enabled: bool) -> None:
         self._fixed_spline_mode = bool(enabled)
         self._viewer.set_current_seed_fixed(enabled)
+        if enabled:
+            self._sync_fix_mode_seeds()
+            if self._fix_mode_seeds_imported:
+                self._on_seeds_changed()
         self._status.showMessage(
             "Fixed spline mode enabled." if enabled else "Fixed spline mode disabled."
         )
+
+    def _on_toggle_anchor_erase_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled and not self._fix_mode_enabled:
+            self._btn_anchor_erase.blockSignals(True)
+            self._btn_anchor_erase.setChecked(False)
+            self._btn_anchor_erase.blockSignals(False)
+            self._status.showMessage("Remove anchors mode is only available while Fix Mode is enabled.")
+            return
+
+        self._anchor_erase_mode = enabled
+        self._viewer.set_anchor_erase_mode(enabled)
+        self._status.showMessage(
+            "Remove anchors mode enabled (click removes anchors within 10 px)."
+            if enabled
+            else "Remove anchors mode disabled."
+        )
+
+    def _on_toggle_fix_mode(self, enabled: bool) -> None:
+        self._fix_mode_enabled = bool(enabled)
+        if not self._fix_mode_enabled and self._anchor_erase_mode:
+            self._btn_anchor_erase.blockSignals(True)
+            self._btn_anchor_erase.setChecked(False)
+            self._btn_anchor_erase.blockSignals(False)
+            self._anchor_erase_mode = False
+            self._viewer.set_anchor_erase_mode(False)
+        if self._current_directory is not None:
+            self._load_directory(str(self._current_directory))
+            return
+        self._status.showMessage("Fix mode enabled." if enabled else "Fix mode disabled.")
+
+    def _annotation_path_for_source(self, source_path: Path) -> Path:
+        return source_path.with_name(source_path.stem + "_annotations.npy")
+
+    def _clear_loaded_fix_annotation(self) -> None:
+        self._loaded_fix_spline_indices = None
+        self._loaded_fix_class_map = None
+        self._loaded_fix_anchor_xs = None
+        self._loaded_fix_anchor_ys = None
+        self._loaded_fix_fixed_mask = None
+        self._loaded_fix_annotation_path = None
+        self._fix_mode_seeds_imported = False
+
+    def _build_fix_anchor_seed_points(self) -> list[tuple[float, float, int, bool]]:
+        if self._loaded_fix_spline_indices is None or self._loaded_fix_class_map is None:
+            return []
+
+        width = len(self._loaded_fix_spline_indices)
+        if width == 0:
+            return []
+
+        eligible = np.isin(self._loaded_fix_class_map, [1, 2, 3, 4])
+        if not np.any(eligible):
+            return []
+
+        selected_indices: set[int] = set()
+        class_map = self._loaded_fix_class_map
+        idx = 0
+        while idx < width:
+            if not eligible[idx]:
+                idx += 1
+                continue
+
+            run_start = idx
+            while idx < width and eligible[idx]:
+                idx += 1
+            run_end = idx - 1
+
+            # Use every eligible pixel as a fixed anchor.
+            for j in range(run_start, run_end + 1):
+                selected_indices.add(j)
+
+            # Add a NaN anchor exactly one column right of the last valid
+            # anchor, when that immediate next column is NaN class.
+            next_idx = run_end + 1
+            if next_idx < width and int(class_map[next_idx]) == 5:
+                selected_indices.add(int(next_idx))
+
+        seeds: list[tuple[float, float, int, bool]] = []
+        for i in sorted(selected_indices):
+            cls = int(self._loaded_fix_class_map[i])
+            if cls not in (1, 2, 3, 4, 5):
+                continue
+            y = float(self._loaded_fix_spline_indices[i])
+            seeds.append((float(i), y, cls, True))
+        return seeds
+
+    def _sync_fix_mode_seeds(self) -> None:
+        if not self._fix_mode_enabled:
+            self._fix_mode_seeds_imported = False
+            return
+
+        if len(self._viewer.seeds) > 0:
+            self._fix_mode_seeds_imported = False
+            return
+
+        seeds = self._build_fix_anchor_seed_points()
+        if not seeds:
+            self._fix_mode_seeds_imported = False
+            return
+
+        self._viewer.set_seed_points(seeds, emit_signal=False)
+        self._fix_mode_seeds_imported = True
+
+    @staticmethod
+    def _labels_to_class_map(labels: NDArray[np.float64]) -> NDArray[np.int32]:
+        class_map = np.ones(labels.shape[0], dtype=np.int32)
+        nan_like_mask = np.isnan(labels) | (labels == float(NAN_SENTINEL))
+        class_map[nan_like_mask] = 5
+        finite_mask = np.isfinite(labels)
+        rounded = np.zeros(labels.shape[0], dtype=np.int32)
+        rounded[finite_mask] = np.round(labels[finite_mask]).astype(np.int32)
+        for class_id in (1, 2, 3, 4):
+            class_map[finite_mask & (rounded == class_id)] = class_id
+        return class_map
+
+    @staticmethod
+    def _fill_boundary_gaps(boundary: NDArray[np.float64], width: int) -> NDArray[np.int64] | None:
+        valid_mask = np.isfinite(boundary) & (boundary != float(NAN_SENTINEL))
+        if int(valid_mask.sum()) < 2:
+            return None
+        x_valid = np.flatnonzero(valid_mask).astype(np.float64)
+        y_valid = boundary[valid_mask].astype(np.float64)
+        x_full = np.arange(width, dtype=np.float64)
+        filled = np.interp(x_full, x_valid, y_valid)
+        return np.round(filled).astype(np.int64)
+
+    def _load_fix_annotation_for_source(self, source_path: Path) -> str | None:
+        self._clear_loaded_fix_annotation()
+        if not self._fix_mode_enabled or self._current_data is None:
+            return None
+
+        annotation_path = self._annotation_path_for_source(source_path)
+        if not annotation_path.exists():
+            return f"Fix mode: no existing annotation for {source_path.name}."
+
+        annotation_data = np.load(str(annotation_path), allow_pickle=False)
+        if annotation_data.ndim != 2 or annotation_data.shape[1] < 2:
+            return f"Fix mode skipped: unsupported annotation shape {annotation_data.shape}."
+        if annotation_data.shape[0] != self._current_data.shape[1]:
+            return (
+                "Fix mode skipped: annotation width mismatch "
+                f"({annotation_data.shape[0]} vs {self._current_data.shape[1]})."
+            )
+
+        boundary = annotation_data[:, 0].astype(np.float64, copy=False)
+        labels = annotation_data[:, 1].astype(np.float64, copy=False)
+        class_map = self._labels_to_class_map(labels)
+        valid_boundary = np.isfinite(boundary) & (boundary != float(NAN_SENTINEL))
+        anchor_mask = valid_boundary & (class_map != 5)
+
+        self._loaded_fix_class_map = class_map
+        self._loaded_fix_fixed_mask = anchor_mask.astype(np.bool_, copy=False)
+        self._loaded_fix_annotation_path = annotation_path
+        if int(anchor_mask.sum()) >= 2:
+            self._loaded_fix_anchor_xs = np.flatnonzero(anchor_mask).astype(np.float64)
+            self._loaded_fix_anchor_ys = boundary[anchor_mask].astype(np.float64)
+
+        self._loaded_fix_spline_indices = self._fill_boundary_gaps(boundary, self._current_data.shape[1])
+        if self._loaded_fix_spline_indices is None:
+            return f"Fix mode: loaded {annotation_path.name}, but no usable spline anchors found."
+
+        return f"Fix mode: loaded {annotation_path.name} as baseline anchors."
+
+    def _apply_loaded_fix_baseline(self) -> bool:
+        if self._loaded_fix_spline_indices is None:
+            return False
+        width = self._viewer.image_width
+        nan_mask = self._viewer.get_nan_column_mask(width)
+        class_map = self._build_class_map(width)
+        self._spline_indices = self._loaded_fix_spline_indices.copy()
+        self._refined_indices = None
+        self._viewer.draw_spline_classified(self._spline_indices, class_map, nan_mask)
+        self._btn_refine.setEnabled(True)
+        self._btn_save.setEnabled(True)
+        self._btn_reset_refine.setEnabled(False)
+        return True
 
     def _apply_display_data(self) -> None:
         """Display the current M-scan and refresh the viewer."""
@@ -415,14 +658,18 @@ class MainWindow(QMainWindow):
         self._btn_refine.setEnabled(False)
         self._btn_reset_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
+        if self._viewer.image_width > 0:
+            pass
         self._status.showMessage(f"{n} seed point(s) placed.")
 
     def _on_fit_spline(self):
         seeds = self._viewer.seeds
-        if len(seeds) < 2:
+        seed_xs: list[float] = [seed[0] for seed in seeds]
+        seed_ys: list[float] = [seed[1] for seed in seeds]
+        if len(seed_xs) < 2:
             return
-        xs = np.array([s[0] for s in seeds])
-        ys = np.array([s[1] for s in seeds])
+        xs = np.array(seed_xs)
+        ys = np.array(seed_ys)
         width = self._viewer.image_width
         try:
             self._spline_indices = fit_spline(xs, ys, width)
@@ -505,7 +752,11 @@ class MainWindow(QMainWindow):
         # Column 0: boundary indices, Column 1: class labels
         combined_data = np.column_stack([ann.astype(np.float32), label_mask])
 
-        out_dir = self._output_dir_for_source(src_path)
+        try:
+            out_dir = self._output_dir_for_source(src_path)
+        except RuntimeError as exc:
+            QMessageBox.critical(self, "Save error", str(exc))
+            return
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy original snippet to output folder
@@ -518,10 +769,7 @@ class MainWindow(QMainWindow):
 
         # Save .tiff visual overlay with class colors per seeded region.
         out_tiff = out_dir / (src_path.stem + "_annotations.tiff")
-        png_class_colors = {
-            class_id: rgb
-            for class_id, (_, _, rgb, _) in _CLASS_STYLE.items()
-        }
+        overlay_class_colors = _class_overlay_rgb_map()
         render_annotation_tiff(
             m_scan,
             ann,
@@ -530,7 +778,7 @@ class MainWindow(QMainWindow):
             contrast=self._preview_contrast,
             gamma=self._preview_gamma,
             class_by_column=class_map,
-            class_colors=png_class_colors,
+            class_colors=overlay_class_colors,
         )
 
         n_nan = int(nan_mask.sum()) + int(class5_mask.sum())
@@ -548,7 +796,8 @@ class MainWindow(QMainWindow):
             return
         folder = self._npy_files[0].parent
         current_name = self._combo_files.currentText()
-        self._npy_files = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
+        candidates = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
+        self._npy_files = candidates
         self._combo_files.blockSignals(True)
         self._combo_files.clear()
         restore_idx = 0
@@ -571,7 +820,11 @@ class MainWindow(QMainWindow):
             blank_ann = np.full(cols, NAN_SENTINEL, dtype=np.uint16)
             
             # Save to output directory using experiment structure
-            out_dir = self._output_dir_for_source(src_path)
+            try:
+                out_dir = self._output_dir_for_source(src_path)
+            except RuntimeError as exc:
+                QMessageBox.critical(self, "Save error", str(exc))
+                return
             out_dir.mkdir(parents=True, exist_ok=True)
             
             # Copy original snippet
@@ -642,9 +895,14 @@ class MainWindow(QMainWindow):
         self._btn_refine.setEnabled(False)
         self._btn_reset_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
+        if self._viewer.image_width > 0:
+            pass
         self._status.showMessage("Seeds cleared.")
 
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_R:
+            self._btn_anchor_erase.setChecked(not self._btn_anchor_erase.isChecked())
+            return
         if event.key() == Qt.Key.Key_1:
             self._set_active_class(1)
             return
@@ -665,14 +923,16 @@ class MainWindow(QMainWindow):
     def _set_active_class(self, cls: int) -> None:
         if cls not in _CLASS_STYLE:
             return
+        if self._anchor_erase_mode:
+            self._btn_anchor_erase.setChecked(False)
         self._active_class = cls
         self._apply_active_class_style()
-        name, _, _, class_value = _CLASS_STYLE[cls]
+        name, _, class_value = _CLASS_STYLE[cls]
         value_text = _format_label_value(class_value)
         self._status.showMessage(f"Active label set to {name}. Saved label-mask value: {value_text}.")
 
     def _apply_active_class_style(self) -> None:
-        name, color_qt, _, class_value = _CLASS_STYLE[self._active_class]
+        name, color_qt, class_value = _CLASS_STYLE[self._active_class]
         value_text = _format_label_value(class_value)
         self._lbl_class.setText(f"Active Seed Label: {name} -> {value_text}")
         self._lbl_class.setStyleSheet(f"color: {color_qt.name()}; font-weight: bold;")
@@ -685,7 +945,10 @@ class MainWindow(QMainWindow):
         Each column inherits the class of the seed immediately to its left.
         The color/label changes exactly at the seed's x-position.
         """
-        class_map = np.ones(width, dtype=np.int32)
+        if self._loaded_fix_class_map is not None and len(self._loaded_fix_class_map) == width:
+            class_map = self._loaded_fix_class_map.copy()
+        else:
+            class_map = np.ones(width, dtype=np.int32)
         seeds = self._viewer.seeds
         classes = self._viewer.seed_classes
         if not seeds or not classes:
@@ -698,14 +961,16 @@ class MainWindow(QMainWindow):
         cls = cls[order]
 
         if len(xs) == 1:
-            class_map[:] = int(cls[0])
+            start = int(np.clip(np.floor(xs[0]), 0, width - 1))
+            class_map[start:] = int(cls[0])
             return class_map
 
-        # Use seed x-positions as breakpoints: placing a seed at x causes the
-        # color to change starting from the PREVIOUS seed's position.
+        # Use seed x-positions as breakpoints: a seed controls from its own
+        # x-position to the right, up to (but excluding) the next seed.
         x_grid = np.arange(width, dtype=np.float64)
-        region_idx = np.clip(np.searchsorted(xs, x_grid, side="right"), 0, len(cls) - 1)
-        class_map[:] = cls[region_idx]
+        region_idx = np.clip(np.searchsorted(xs, x_grid, side="right") - 1, 0, len(cls) - 1)
+        overwrite_mask = x_grid >= xs[0]
+        class_map[overwrite_mask] = cls[region_idx[overwrite_mask]]
         return class_map
 
     def _build_fixed_spline_mask(self, width: int) -> NDArray[np.bool_]:
@@ -723,12 +988,14 @@ class MainWindow(QMainWindow):
         fixed = fixed[order]
 
         if len(xs) == 1:
-            fixed_mask[:] = bool(fixed[0])
+            start = int(np.clip(np.floor(xs[0]), 0, width - 1))
+            fixed_mask[start:] = bool(fixed[0])
             return fixed_mask
 
         x_grid = np.arange(width, dtype=np.float64)
-        region_idx = np.clip(np.searchsorted(xs, x_grid, side="right"), 0, len(fixed) - 1)
-        fixed_mask[:] = fixed[region_idx]
+        region_idx = np.clip(np.searchsorted(xs, x_grid, side="right") - 1, 0, len(fixed) - 1)
+        overwrite_mask = x_grid >= xs[0]
+        fixed_mask[overwrite_mask] = fixed[region_idx[overwrite_mask]]
         return fixed_mask
 
 

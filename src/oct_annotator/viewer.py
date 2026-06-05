@@ -25,6 +25,7 @@ from oct_annotator.engine import to_preview_uint8
 
 SEED_RADIUS = 0.5
 SEED_HITBOX_RADIUS_PX = 12
+ANCHOR_ERASE_COL_RADIUS = 5
 SEED_COLOR = QColor(255, 50, 50, 140)
 SPLINE_COLOR = QColor(0, 255, 100, 110)
 REFINED_COLOR = QColor(0, 180, 60, 200)
@@ -129,6 +130,7 @@ class MScanViewer(QGraphicsView):
         self._seed_items: List[QGraphicsEllipseItem] = []
         self._current_seed_class: int = 1
         self._current_seed_fixed: bool = False
+        self._anchor_erase_mode: bool = False
 
         # Curve overlays
         self._spline_path_items: List[QGraphicsPathItem] = []
@@ -222,6 +224,73 @@ class MScanViewer(QGraphicsView):
 
     def set_current_seed_fixed(self, is_fixed: bool) -> None:
         self._current_seed_fixed = bool(is_fixed)
+
+    def set_anchor_erase_mode(self, enabled: bool) -> None:
+        self._anchor_erase_mode = bool(enabled)
+
+    @property
+    def anchor_erase_mode(self) -> bool:
+        return self._anchor_erase_mode
+
+    def remove_seeds_in_column_band(self, center_x: float, col_radius: int) -> int:
+        if not self._seeds:
+            return 0
+        center_col = int(round(float(center_x)))
+        col_radius = int(max(0, col_radius))
+        keep_indices: list[int] = []
+        for i, (seed_x, _, _, _) in enumerate(self._seeds):
+            seed_col = int(round(float(seed_x)))
+            if abs(seed_col - center_col) > col_radius:
+                keep_indices.append(i)
+
+        removed = len(self._seeds) - len(keep_indices)
+        if removed <= 0:
+            return 0
+
+        new_seeds = [self._seeds[i] for i in keep_indices]
+        self.set_seed_points(new_seeds, emit_signal=True)
+        return removed
+
+    def set_seed_points(
+        self,
+        seeds: List[Tuple[float, float, int, bool]],
+        emit_signal: bool = True,
+    ) -> None:
+        """Replace current seeds with provided points.
+
+        Each seed is (x, y, class_id, fixed_spline).
+        """
+        for item in self._seed_items:
+            self._scene.removeItem(item)
+        self._seed_items.clear()
+        self._seeds.clear()
+
+        if self._image_shape is None:
+            if emit_signal:
+                self.seeds_changed.emit()
+            return
+
+        rows, cols = self._image_shape
+        for x, y, class_id, fixed in seeds:
+            x = float(np.clip(x, 0, cols - 1))
+            y = float(np.clip(y, 0, rows - 1))
+            self._seeds.append((x, y, int(class_id), bool(fixed)))
+
+            seed_color = self._class_colors.get(int(class_id), SEED_COLOR)
+            pen = QPen(seed_color, 1)
+            pen.setCosmetic(True)
+            item = self._scene.addEllipse(
+                x - SEED_RADIUS,
+                y - SEED_RADIUS,
+                SEED_RADIUS * 2,
+                SEED_RADIUS * 2,
+                pen,
+                QBrush(seed_color),
+            )
+            self._seed_items.append(item)
+
+        if emit_signal:
+            self.seeds_changed.emit()
 
     @property
     def image_width(self) -> int:
@@ -464,8 +533,29 @@ class MScanViewer(QGraphicsView):
             x, y = scene_pos.x(), scene_pos.y()
             rows, cols = self._image_shape
             if 0 <= x < cols and 0 <= y < rows:
+                if self._anchor_erase_mode:
+                    self.remove_seeds_in_column_band(x, ANCHOR_ERASE_COL_RADIUS)
+                    return
                 x_col = int(round(x))
-                if any(int(round(seed_x)) == x_col for seed_x, _, _, _ in self._seeds):
+                for i, (seed_x, _, _, _) in enumerate(self._seeds):
+                    if int(round(seed_x)) != x_col:
+                        continue
+                    self._seeds[i] = (x, y, self._current_seed_class, self._current_seed_fixed)
+                    item = self._seed_items[i]
+                    self._scene.removeItem(item)
+                    seed_color = self._class_colors.get(self._current_seed_class, SEED_COLOR)
+                    pen = QPen(seed_color, 1)
+                    pen.setCosmetic(True)
+                    new_item = self._scene.addEllipse(
+                        x - SEED_RADIUS,
+                        y - SEED_RADIUS,
+                        SEED_RADIUS * 2,
+                        SEED_RADIUS * 2,
+                        pen,
+                        QBrush(seed_color),
+                    )
+                    self._seed_items[i] = new_item
+                    self.seeds_changed.emit()
                     return
                 self._seeds.append((x, y, self._current_seed_class, self._current_seed_fixed))
                 seed_color = self._class_colors.get(self._current_seed_class, SEED_COLOR)

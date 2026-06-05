@@ -13,7 +13,7 @@ A lightweight, callable desktop tool for annotating retinal layer boundaries in 
 - **Black-background aware refinement** — if the top layer fades out near scan ends, fine-tuning keeps the spline instead of snapping down to a deeper layer
 - **Multi-class regional classification** — press `1`, `2`, `3`, `4` to classify seed regions; each seed stores its class, and boundaries are colored per-region (dark green, cyan, orange, red), with class labels exported to a combined `.npy` file
 - **Per-class TIFF overlay** — saved TIFF shows colored boundary regions matching the assigned classes
-- **Experiment-friendly output layout** — saved annotations, class labels, and overlay PNGs go to an `annotated/` subfolder
+- **Experiment-friendly output layout** — saved annotations, class labels, and overlay TIFFs go to the output folder with preserved experiment structure
 - **Fast review workflow** — saving or flagging a scan automatically advances to the next source file and can continue into the next sibling experiment folder
 - **Clean file list** — only source `*.npy` scans appear in the dropdown; generated `*_annotations.npy` files are excluded
 - **Improved seed editing** — right-click removes the latest seed, right-clicking a seed removes that exact seed, and duplicate X-columns are ignored
@@ -125,7 +125,7 @@ On Windows, you can also double-click `start_oct_annotate.bat` from the project 
 6. **Mark excluded regions** — add one or more NaN windows for columns that should export as the NaN sentinel value `65535`
 7. **Save** — press `D` or click **Save** to write:
    - `<save_root>/<experiment>/<source_stem>_annotations.npy` — shape `(columns, 2)` where column 0 = boundary indices (float32) and column 1 = class labels (1.0, 2.0, 3.0, 4.0, or `nan` for the red `nan` label and excluded columns)
-   - `<save_root>/<experiment>/<source_stem>_annotations.tiff` — overlay with colored boundaries (dark green, cyan, orange, red) matching assigned classes
+   - `<save_root>/<experiment>/<source_stem>_annotations.tiff` — overlay with colored boundaries (green, yellow, orange, blue; red reserved for `nan`) matching assigned classes
    - A copy of the source scan is placed alongside the annotation files
    
    The save root directory is set via the **Save root** field in the toolbar and persists across sessions. The next file is loaded automatically after saving.
