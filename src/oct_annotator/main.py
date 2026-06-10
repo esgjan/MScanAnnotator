@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import List
 
+import cv2
 import numpy as np
 from numpy.typing import NDArray
 from PyQt6.QtCore import Qt, QSettings
@@ -51,10 +52,15 @@ NAN_LABEL_TEXT = "nan"
 _CLASS_STYLE: dict[int, tuple[str, QColor, float]] = {
     1: ("Class 1", QColor(0, 190, 90), 1.0),
     2: ("Class 2", QColor(245, 205, 0), 2.0),
-    3: ("Class 3", QColor(255, 165, 50), 3.0),
+    3: ("Class 3", QColor(145, 92, 43), 3.0),
     4: ("Class 4", QColor(40, 120, 255), 4.0),
     5: (NAN_LABEL_TEXT, QColor(210, 40, 40), float("nan")),
 }
+
+def _fix_mode_class_colors() -> dict[int, QColor]:
+    colors = {class_id: QColor(color_qt) for class_id, (_, color_qt, _) in _CLASS_STYLE.items()}
+    colors[5] = QColor(0, 0, 0, 0)
+    return colors
 
 
 def _class_overlay_rgb_map() -> dict[int, tuple[int, int, int]]:
@@ -115,7 +121,40 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _is_source_scan(path: Path) -> bool:
-        return path.suffix == ".npy" and not path.stem.endswith("_annotations")
+        suffix = path.suffix.lower()
+        stem = path.stem
+        if suffix == ".npy":
+            return not (stem.endswith("_annotations") or stem.endswith("_still"))
+        if suffix in (".tif", ".tiff"):
+            return not stem.endswith("_annotations")
+        return False
+
+    @staticmethod
+    def _list_source_scans(folder: Path) -> List[Path]:
+        return sorted(path for path in folder.iterdir() if path.is_file() and MainWindow._is_source_scan(path))
+
+    @staticmethod
+    def _load_source_array(path: Path) -> NDArray[np.float64]:
+        suffix = path.suffix.lower()
+        if suffix == ".npy":
+            data = np.load(str(path), allow_pickle=False)
+            if data.ndim != 2:
+                raise ValueError(f"Unsupported .npy shape for source scan: {data.shape}")
+            return data.astype(np.float64)
+
+        if suffix in (".tif", ".tiff"):
+            image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if image is None:
+                raise ValueError(f"Failed to load image: {path}")
+            if image.ndim == 2:
+                return image.astype(np.float64)
+            if image.ndim == 3:
+                # Keep red-line guidance prominent when labeling overlay TIFFs.
+                red_channel = image[:, :, 2]
+                return red_channel.astype(np.float64)
+            raise ValueError(f"Unsupported image shape: {image.shape}")
+
+        raise ValueError(f"Unsupported file type: {path.suffix}")
 
     @staticmethod
     def _experiment_output_parts(source_path: Path) -> tuple[str, ...]:
@@ -153,6 +192,11 @@ class MainWindow(QMainWindow):
         self._output_root_directory = directory
         if hasattr(self, "_edit_output_dir"):
             self._edit_output_dir.setText(str(directory))
+
+    def _active_viewer_class_colors(self) -> dict[int, QColor]:
+        if self._fix_mode_enabled:
+            return _fix_mode_class_colors()
+        return {class_id: color for class_id, (_, color, _) in _CLASS_STYLE.items()}
 
     # ---- UI construction -----------------------------------------------
 
@@ -216,7 +260,7 @@ class MainWindow(QMainWindow):
 
         self._btn_fix_mode = QPushButton("Fix Mode")
         self._btn_fix_mode.setCheckable(True)
-        self._btn_fix_mode.setChecked(True)
+        self._btn_fix_mode.setChecked(False)
         self._btn_fix_mode.setToolTip(
             "Load existing *_annotations.npy as baseline anchors for fixing."
         )
@@ -358,7 +402,15 @@ class MainWindow(QMainWindow):
     def _load_directory(self, directory: str):
         folder = Path(directory)
         self._current_directory = folder
-        candidates = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
+        raw_candidates = self._list_source_scans(folder)
+        candidates: list[Path] = []
+        skipped_names: list[str] = []
+        for candidate in raw_candidates:
+            try:
+                _ = self._load_source_array(candidate)
+                candidates.append(candidate)
+            except Exception:
+                skipped_names.append(candidate.name)
         self._npy_files = candidates
         self._combo_files.blockSignals(True)
         self._combo_files.clear()
@@ -369,8 +421,17 @@ class MainWindow(QMainWindow):
         if self._npy_files:
             self._combo_files.setCurrentIndex(0)
             self._on_file_selected(0)
+            if skipped_names:
+                self._status.showMessage(
+                    f"Opened {len(self._npy_files)} source files; skipped {len(skipped_names)} unreadable files."
+                )
         else:
-            self._status.showMessage("No .npy files found in the selected folder.")
+            if skipped_names:
+                self._status.showMessage(
+                    f"No loadable source files found in the selected folder. Skipped {len(skipped_names)} unreadable files."
+                )
+            else:
+                self._status.showMessage("No supported source files found in the selected folder.")
 
     def _find_next_experiment_directory(self, current_directory: Path) -> Path | None:
         parent = current_directory.parent
@@ -382,9 +443,7 @@ class MainWindow(QMainWindow):
             return None
 
         for candidate in sibling_dirs[current_index + 1:]:
-            has_source_scans = any(
-                self._is_source_scan(path) for path in candidate.glob("*.npy")
-            )
+            has_source_scans = len(self._list_source_scans(candidate)) > 0
             if has_source_scans:
                 return candidate
         return None
@@ -395,7 +454,7 @@ class MainWindow(QMainWindow):
         self._btn_flag.setEnabled(True)
         path = self._npy_files[index]
         try:
-            self._current_data = np.load(str(path)).astype(np.float64)
+            self._current_data = self._load_source_array(path)
         except Exception as exc:
             QMessageBox.critical(self, "Load error", str(exc))
             return
@@ -587,7 +646,7 @@ class MainWindow(QMainWindow):
 
     def _load_fix_annotation_for_source(self, source_path: Path) -> str | None:
         self._clear_loaded_fix_annotation()
-        if not self._fix_mode_enabled or self._current_data is None:
+        if (not self._fix_mode_enabled) or self._current_data is None:
             return None
 
         annotation_path = self._annotation_path_for_source(source_path)
@@ -796,7 +855,7 @@ class MainWindow(QMainWindow):
             return
         folder = self._npy_files[0].parent
         current_name = self._combo_files.currentText()
-        candidates = sorted(path for path in folder.glob("*.npy") if self._is_source_scan(path))
+        candidates = self._list_source_scans(folder)
         self._npy_files = candidates
         self._combo_files.blockSignals(True)
         self._combo_files.clear()
@@ -812,6 +871,7 @@ class MainWindow(QMainWindow):
         current_idx = self._combo_files.currentIndex()
         if current_idx < 0 or current_idx >= len(self._npy_files):
             return
+
         src_path = self._npy_files[current_idx]
 
         # Create all-NaN annotation for this OCT without copying to 2hard2label folder.
@@ -895,8 +955,6 @@ class MainWindow(QMainWindow):
         self._btn_refine.setEnabled(False)
         self._btn_reset_refine.setEnabled(False)
         self._btn_save.setEnabled(False)
-        if self._viewer.image_width > 0:
-            pass
         self._status.showMessage("Seeds cleared.")
 
     def keyPressEvent(self, event):
@@ -937,6 +995,7 @@ class MainWindow(QMainWindow):
         self._lbl_class.setText(f"Active Seed Label: {name} -> {value_text}")
         self._lbl_class.setStyleSheet(f"color: {color_qt.name()}; font-weight: bold;")
         self._viewer.set_current_seed_class(self._active_class)
+        self._viewer.set_class_colors(self._active_viewer_class_colors())
         self._redraw_curves()
 
     def _build_class_map(self, width: int) -> NDArray[np.int32]:
