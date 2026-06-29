@@ -131,6 +131,8 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _list_source_scans(folder: Path) -> List[Path]:
+        if not folder.is_dir():
+            return []
         return sorted(path for path in folder.iterdir() if path.is_file() and MainWindow._is_source_scan(path))
 
     @staticmethod
